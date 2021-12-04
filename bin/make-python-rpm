@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+
+import re
+import os
+import sys
+import errno
+import subprocess
+import shlex
+import shutil
+import getpass
+import pwd
+import platform
+from pathlib import Path
+from string import Template
+from collections import ChainMap
+from setuptools.dist import Distribution        	# type: ignore
+from typing import Dict, List, Set, Tuple
+# We want this to work in plain python without external modules
+# So avoid docopt
+import argparse
+
+DIST = Distribution()
+DIST.parse_config_files()
+# pprint(DIST.install_requires)
+
+TEMPLATE_FILE = str(Path(__file__).parents[1] / "etc" / "make-python-rpm.spec.tmpl")
+ORGANIZATION_DIR = "/usr/local/lib"
+VENDOR = "%s <%s>" % (DIST.get_contact(), DIST.get_contact_email())
+TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())
+GROUP  = "Development/Libraries"
+FULL   = "-full"
+
+defaults = {
+    "target":   TARGET,
+    "git":      "",
+    "template": TEMPLATE_FILE,
+    "group":    GROUP,
+    "vendor":   VENDOR,
+}
+
+for name in defaults:
+    try:
+        defaults[name] = DIST.command_options["make_python_rpm"][name][1]
+    except KeyError:
+        pass
+
+class SpecChainMap(ChainMap):
+    def __getitem__(self, key):
+        """Escape % in all values to %%"""
+        return super().__getitem__(key).replace("%", "%%")
+
+SENTINEL_DICT: Dict[str, str] = {}
+class SpecTemplate(Template):
+    """A Template subclass that uses @ as delimiter and replaces % by %% in all substituted value"""
+    delimiter = "@"
+
+    def substitute(self, mapping=SENTINEL_DICT, **kws):
+        """Escape % in all substituted values to %%"""
+        if mapping is SENTINEL_DICT:
+            mapping = SpecChainMap(kws)
+        elif kws:
+            mapping = SpecChainMap(kws, mapping)
+        else:
+            mapping = SpecChainMap(mapping)
+        return super().substitute(mapping)
+
+def run(*args: str,
+        expect_error: Set[str] = None,
+        expect_returncode: Set[int] = None,
+        capture_output: bool = True) -> str:
+    """Run an external program and returns its output but only if there is no
+    error output and no unexpected exitcode. Otherwise raise an exception
+    """
+    if expect_returncode is None:
+        expect_returncode = { 0 }
+    args = (*args[0].split(), *args[1:])
+    command = " ".join(args)
+    print("+", command)
+    if capture_output:
+        result = subprocess.run(args,
+                                stdout = subprocess.PIPE,
+                                stderr = subprocess.PIPE,
+                                universal_newlines = True)
+    else:
+        result = subprocess.run(args, universal_newlines = True)
+    if capture_output:
+        error = result.stderr.strip()
+        if expect_error is not None:
+            if error not in expect_error:
+                raise SystemExit("Unexpected error from '%s': %s" % (command, error))
+        elif error:
+            raise SystemExit("Error from '%s': %s" % (command, error))
+    if result.returncode not in expect_returncode:
+        if result.returncode < 0:
+            raise SystemExit("'%s' killed by signal %d" %
+                             (command, -result.returncode))
+        elif result.returncode == 0:
+            raise ValueError("'%s' unexpectedly succeeded", command)
+        else:
+            raise SystemExit("'%s' exited with unexpected returncode %d" %
+                             (command, result.returncode))
+    return result.stdout
+
+def git_describe() -> Tuple[str, str, str]:
+    """Runs 'git describe --long'
+
+    Returns:
+        A tuple of strings: `(version, commit_nr, id)`
+    """
+    tag = run("git describe --long")
+    match = re.fullmatch(r"v(.*)-(\d+)-g([0-9a-fA-F]+)\n", tag, re.ASCII)
+    if not match:
+        raise SystemExit("Cannot parse 'git describe --long' output '%s'" % tag)
+    return match[1], match[2], match[3]
+
+def git_branch() -> str:
+    """Determine the current git branch
+
+    Returns:
+        A the current branch or the empty string if it can't determine it
+    """
+    branch = run("git symbolic-ref -q HEAD", expect_returncode = {0, 1})
+    if branch:
+        # We could avoid this using the --short option to git symbolic-ref
+        # However that doesn't exist on very old git versions like 1.7.7.6
+        if not branch.endswith("\n"):
+            raise AssertionError("Git symbolic ref '%s' does not end with '\n'" % branch)
+        branch = branch[:-1]
+        if not branch.startswith("refs/heads/"):
+            raise AssertionError("Git symbolic ref '%s' does not start with 'refs/heads/'" % branch)
+        branch = branch[11:]
+    return branch
+
+def info_from_package(rpm_package: str, must_exist = True) -> Dict[str, str]:
+    """Return info of a given package"""
+
+    if must_exist:
+        rpm_info = run("rpm", "-qi", "--", rpm_package)
+    else:
+        rpm_info = run("rpm", "-qi", "--", rpm_package, expect_returncode = { 0, 1 })
+    if not must_exist:
+        if rpm_info.strip() == "package %s is not installed" % rpm_package:
+            return {}
+        print("Different")
+    match = re.fullmatch(r"""
+    (
+    (?:
+    ^                        # Start a new line
+    [A-Z] [^\n:]* [^\s:]     # Key
+    [^\S\n] * : [ ]          # Separator
+    .* \n                    # Value
+    )+?
+    )
+    Description\s* :         # Final key
+    ([^\0]*)                 # Final value
+    """, rpm_info, flags = re.ASCII | re.MULTILINE | re.VERBOSE)
+    if not match:
+        raise ValueError("Cannot parse output of rpm -qi -- %s" % rpm_package)
+    description = match.group(2).strip()
+    key_values = re.split(r"""
+    (^ [A-Z] [^\n:]* [^\s:]) # Key
+    [^\S\n] * : [ ]          # Separator
+    """, match.group(1), flags = re.ASCII | re.MULTILINE | re.VERBOSE)
+    # The previous fullmatch forces the result to be an empty string
+    # followed by key/value pairs
+    # print(key_values)
+    if len(key_values) % 2 == 0:
+        raise AssertionError("Not an even number of properties")
+    key_values.extend((
+        "description", description,
+    ))
+    iter = (s for s in key_values)
+    if next(iter) != "":
+        raise AssertionError("First element is not empty")
+    # Convert keys to lowercase and replace whitespace by _
+    keys = ("_".join(key.split()).casefold() for key in iter)
+    # Strip leading and trailing spaces from values
+    values = (value.strip() for value in iter)
+    return dict(zip(keys, values))
+
+def package_from_file(path: str) -> Dict[str, str]:
+    """Given a path determine which RPM package that file comes from and return
+    the properties of that package
+    """
+
+    real_path = os.path.realpath(path)
+    rpm_package = run("rpm", "-qf", "--", real_path).strip()
+    info = info_from_package(rpm_package)
+    info.update({
+        # Initial _ makes certain it can't be overwritten by a package property
+        "_package": rpm_package,
+        "_path": path,
+        "_path_shell": shlex.quote(path),
+        "_path_real": real_path,
+        "_path_real_shell": shlex.quote(real_path),
+    })
+    return info
+
+def get_pwd() -> pwd.struct_passwd:
+    """return the password entry for the current user (based on environment variables)"""
+    name = getpass.getuser()
+    return pwd.getpwnam(name)
+
+def real_home() -> str:
+    """Get real path of user home directory based on effective uid (ignoring environment)"""
+    return os.path.realpath(pwd.getpwuid(os.geteuid()).pw_dir)
+
+def full_rpm(target: str = TARGET,
+             template: str = TEMPLATE_FILE,
+             git: str = "",
+             release: int = None,
+             group: str = GROUP,
+             vendor: str = VENDOR,
+             spec_only: bool = False) -> None:
+
+    if os.geteuid() == 0:
+        raise SystemExit("Please do not run this script as user root")
+
+    version = DIST.get_version()
+
+    if git:
+        # Check git branch
+        branch = git_branch()
+        if not branch:
+            raise SystemExit("I could not determine your git branch. You may be in a detached HEAD state")
+        if branch != git:
+            raise SystemExit("You are on git branch '%s'. But I will only generate an RPM for branch '%s'" % (branch, git))
+
+        # Determine patch number
+        (git_version, nr_commits, _) = git_describe()
+        if version != git_version:
+            raise SystemExit("Inconsistent version. Your setup.py says '%s' but git describe says '%s'" % (version, git_version))
+        patch = "." + nr_commits
+        version += patch
+        # The extra `0` is a horrible, horrible hack. If the patch is equal to
+        # the last component of the version it is ignored by `egg_info -b`. E.g.
+        # version `1.2` with -b 2 will lead to version `1.2` instead of the
+        # proper `1.2.2`. It properly works however with -b 02. Go figure...
+        patch = ".0" + nr_commits
+    else:
+        patch = ""
+
+    home = real_home()
+    python_unwrapped = sys.executable
+    while True:
+        dir_unwrapped = os.path.realpath(os.path.dirname(python_unwrapped))
+        if os.path.commonpath((home, dir_unwrapped)) != home:
+            break
+        try:
+            link = os.readlink(python_unwrapped)
+        except OSError as e:
+            if e.errno != errno.EINVAL:
+                raise
+            raise SystemExit("You are running this script with python executable '%s' which in the end points to '%s' which in turn is inside your home directory '%s'. I will not create an RPM based on a private python version" % (sys.executable, python_unwrapped, home)) from None
+        python_unwrapped = python_unwrapped = os.path.join(dir_unwrapped, link)
+    if python_unwrapped != sys.executable:
+        print("You are probably running inside a virtual environment. I followed some symlinks and will use '%s' is the target python" % python_unwrapped)
+    python_package = package_from_file(python_unwrapped)
+
+    # We probably don't really need to add pip in the dependencies
+    # E.g. the whole rpm build can be done using a pip from PYPI
+    # It's just that I don't want to leave a system with an implicitely
+    # installed python without corresponding pip
+    pip_file = run(python_package["_path_real"], "-c", """
+import sys
+import pip
+print(sys.modules["pip"].__file__)
+    """).strip()
+    # We should probably handle the case that there is no pip package...
+    pip_package = package_from_file(pip_file)
+    # We should probably handle the case that the python and pip package are the same...
+
+    # DIST.parse_command_line()
+
+    # Add suffix -full to indicate that it has all dependencies and differs
+    # from what bdist_rpm generates
+    package_name = DIST.get_name() + FULL
+    package_version = version.replace("-", "_")
+    architecture = python_package["architecture"]
+    license = DIST.get_license() or "UNKNOWN"
+    # If no explicit license try to get it from a classifier
+    if license.casefold() == "unknown":
+        for classifier in DIST.get_classifiers():
+            match = re.fullmatch(r"^License\s*::\s*(\S.*)", classifier, re.IGNORECASE)
+            if match:
+                license = match.group(1).rstrip()
+                break
+    if release is None:
+        old_package = info_from_package("%s-%s" % (package_name, package_version), must_exist = False)
+        if old_package:
+            release = 1 + int(old_package["release"])
+        else:
+            release = 1
+
+    scripts: List[str] = []
+    for script in DIST.command_options["options"]["scripts"]:
+        script = script.strip()
+        if not script.startswith("bin/"):
+            continue
+        if "/" in script[4:]:
+            continue
+        scripts.append(script)
+
+    dist_dir = Path("dist")
+    build_dir = "build/full_rpm.%s" % platform.platform(aliased = True, terse = True)
+    os.makedirs(build_dir, exist_ok=True)
+    shutil.rmtree(build_dir)
+    os.umask(0o22)
+    os.mkdir(build_dir)
+    rpm_dir = "%s/rpm" % build_dir
+    os.mkdir(rpm_dir)
+    for dir in "BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS":
+        os.mkdir("%s/%s" % (rpm_dir, dir))
+
+    source_dir = "%s/SOURCES" % rpm_dir
+    force_version = ["egg_info", "-b", patch, "-e", build_dir] if patch else []
+    run(python_unwrapped,
+        "setup.py", *force_version, "sdist", "--dist-dir", source_dir,
+        capture_output = False)
+    with os.scandir(source_dir) as sources:
+        source = next(sources)
+        if not source.is_file():
+            raise(ValueError("sdist result '%s' is not a file" % source.path))
+        extra = next(sources, None)
+        if extra is not None:
+            raise(ValueError("Spurious sdist result '%s'" % extra.path))
+
+    spec_file = "%s/SPECS/%s.spec" % (rpm_dir, package_name)
+
+    with open(template) as handle:
+        spec_template = SpecTemplate(handle.read())
+    with open(spec_file, "w") as spec:
+        spec.write(spec_template.substitute(
+            name          = DIST.get_name(),
+            version       = version,
+            package_name  = package_name,
+            package_version = package_version,
+            release       = str(release),
+            architecture  = architecture,
+            description   = DIST.get_description(),
+            long_description = DIST.get_long_description().strip(),
+            group         = group,
+            license       = license,
+            vendor        = vendor,
+            packager      = get_pwd().pw_gecos,
+            source        = source.name,
+            URL           = DIST.get_url(),
+            requires      = ", ".join([python_package["name"], pip_package["name"]]),
+            python_shell  = python_package["_path_shell"],
+            target_quoted = shlex.quote(target),
+            scripts_shell = " ".join(map(shlex.quote, scripts)),
+        ))
+    if spec_only:
+        print("spec file", str(Path(spec_file).resolve()))
+        return
+
+    run("rpmbuild", "-ba",
+        "--define", "debug_package %{nil}",
+        "--define", "__python python3",
+        "--define", "_topdir %s" % os.path.realpath(rpm_dir),
+        "--clean",
+        spec_file,
+        capture_output = False)
+
+    print("-" * 40)
+    os.makedirs(dist_dir, exist_ok=True)
+    with os.scandir("%s/SRPMS" % rpm_dir) as rpms:
+        for rpm in rpms:
+            if not rpm.name.casefold().endswith(".rpm"):
+                continue
+            if not rpm.is_file():
+                raise(ValueError("Path '%s' is not file" % rpm.path))
+            shutil.copy(rpm.path, dist_dir)
+            print("Created", dist_dir / rpm.name)
+    with os.scandir("%s/RPMS/%s" % (rpm_dir, architecture)) as rpms:
+        for rpm in rpms:
+            if not rpm.name.casefold().endswith(".rpm"):
+                continue
+            if not rpm.is_file():
+                raise(ValueError("Path '%s' is not file" % rpm.path))
+            shutil.copy(rpm.path, dist_dir)
+            print("Created", dist_dir / rpm.name)
+
+if __name__=='__main__':
+    parser = argparse.ArgumentParser(
+        description='Create an RPM with all dependencies')
+    parser.add_argument(
+        "--target",
+        default = defaults["target"],
+        metavar = "DIR",
+        help = "Where the RPM will install the package [default: %s]" % defaults["target"])
+    parser.add_argument(
+        "--git",
+        default = defaults["git"],
+        metavar = "BRANCH",
+        help = "If not empty check that we are on the given branch and use git --describe to fetch a commit number and append that to the version [default: %s]" % defaults["git"])
+    parser.add_argument(
+        "--release",
+        type=int,
+        metavar = "NUMBER",
+        help = "RPM Release number. Defaults to 1 more than the currently installed version or 1 if not installed")
+    parser.add_argument(
+        "--template",
+        default = defaults["template"],
+        metavar = "TEXT",
+        help = "Template to use to generate the spec file [default: %s]" % defaults["template"])
+    parser.add_argument(
+        "--vendor",
+        default = defaults["vendor"],
+        metavar = "TEXT",
+        help = "This will become the vendor tag in the RPM [default: %s]" % defaults["vendor"])
+    parser.add_argument(
+        "--group",
+        default = defaults["group"],
+        metavar = "TEXT",
+        help = "RPM group this package belongs to [default: %s]" % defaults["group"])
+    parser.add_argument(
+        "--spec-only",
+        action = "store_true",
+        help = "Only generate spec file")
+    parser.add_argument('--version', action="version", version='%(prog)s 1.0.0')
+    args = vars(parser.parse_args())
+    print(args)
+    full_rpm(**args)

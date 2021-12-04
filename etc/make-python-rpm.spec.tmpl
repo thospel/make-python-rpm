@@ -1,0 +1,95 @@
+%define name @package_name
+# We mangled the package name (added -full),
+# but the source tarball contains a directory without the -full
+%define unmangled_name @name
+%define unmangled_version @version
+# Mangling is replacing "-" by "_"
+%define version @package_version
+%define release @release
+%define license @license
+
+# Add --soname-only. We don't really want that, but otherwise binary python wheels generate requires without corresponding provides
+%define __elf_requires	%{_rpmconfigdir}/elfdeps --requires --soname-only %{?__filter_GLIBC_PRIVATE:--filter-private}
+
+
+Summary: @description
+Name: %{name}
+Version: %{version}
+Release: %{release}
+Source0: @source
+License: %{license}
+Group: @group
+BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-buildroot
+Prefix: %{_prefix}
+BuildArch: @architecture
+Vendor: @vendor
+Packager: @packager
+Requires: @requires
+BuildRequires: @requires
+Url: @URL
+
+%description
+@long_description
+
+%prep
+%setup -n %{unmangled_name}-%{unmangled_version}
+
+%build
+@python_shell -m venv venv
+venv/bin/python3 -m pip install --upgrade pip
+venv/bin/python3 -m pip install --upgrade setuptools
+# venv/bin/python3 -m pip list
+venv/bin/python3 -m pip install .
+# venv/bin/python3 -m pip list
+venv/bin/python3 -m pip uninstall -y setuptools
+# remove all pycaches
+find venv -name __pycache__ -type d -prune -exec rm -rf {} +
+# seek pyo file and pyc file to delete it
+find venv -name '*.py[co]' -delete
+
+%install
+# Create directories
+install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted "$RPM_BUILD_ROOT/usr/local/bin"
+
+cp -r venv/* "$RPM_BUILD_ROOT"@target_quoted/
+TMP=`realpath venv`
+INSTALL_TARGET=@target_quoted
+grep -arl -- "$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
+import fileinput
+import sys
+for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True):
+    sys.stdout.write(line.replace(sys.argv[1], sys.argv[2]))
+' "$TMP" "$INSTALL_TARGET"
+
+echo @target_quoted > INSTALLED_FILES
+
+for script in @scripts_shell; do
+   ln -s @target_quoted/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
+done
+echo /usr/local/bin >> INSTALLED_FILES
+
+%check
+# autoflake needs setuptools
+venv/bin/python3 -m pip install setuptools
+venv/bin/python3 -m pip install safety mypy autoflake
+venv/bin/python3 -m safety check
+venv/bin/python3 -m mypy @scripts_shell lib
+venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell lib
+
+%clean
+rm -rf -- "$RPM_BUILD_ROOT"
+
+%post
+# Generate __pycache__
+for script in @scripts_shell; do
+  @target_quoted/"$script" --version > /dev/null
+done
+
+%preun
+# remove all __pycache__
+find @target_quoted -name __pycache__ -type d -prune -exec rm -rf {} +
+# seek pyo file and pyc file to delete it
+find @target_quoted -name '*.py[co]' -delete
+
+%files -f INSTALLED_FILES
+%defattr(-,root,root)
