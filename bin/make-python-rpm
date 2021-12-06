@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-
+import sys
 import re
 import os
-import sys
 import errno
 import subprocess
 import shlex
@@ -215,6 +214,9 @@ def full_rpm(target: str = TARGET,
 
     if os.geteuid() == 0:
         raise SystemExit("Please do not run this script as user root")
+
+    if sys.version_info < (3, 8):
+        raise SystemExit("Python 3.8 or later is required")
 
     version = DIST.get_version()
 
