@@ -69,10 +69,14 @@ done
 echo /usr/local/bin >> INSTALLED_FILES
 
 %check
+venv/bin/python3 -m pip install safety
+venv/bin/python3 -m safety check
+for script in @scripts_shell; do
+   venv/bin/python3 "$script" --version > /dev/null
+done
 # autoflake needs setuptools
 venv/bin/python3 -m pip install setuptools
 venv/bin/python3 -m pip install safety mypy autoflake
-venv/bin/python3 -m safety check
 venv/bin/python3 -m mypy @scripts_shell lib
 venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell lib
 

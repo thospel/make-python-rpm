@@ -72,6 +72,9 @@ venv/bin/python3 -m pip install safety mypy autoflake
 venv/bin/python3 -m safety check
 venv/bin/python3 -m mypy @scripts_shell
 venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell
+for script in @scripts_shell; do
+   venv/bin/python3 "$script" --version > /dev/null
+done
 
 %clean
 rm -rf -- "$RPM_BUILD_ROOT"
