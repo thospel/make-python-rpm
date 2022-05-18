@@ -3,6 +3,7 @@
 # but the source tarball contains a directory without the -full
 %define unmangled_name @name
 %define unmangled_version @version
+%define docs @name-@version.docs
 # Mangling is replacing "-" by "_"
 %define version @package_version
 %define release @release
@@ -40,18 +41,46 @@ venv/bin/python3 -m pip install --upgrade pip
 venv/bin/python3 -m pip install --upgrade setuptools
 # venv/bin/python3 -m pip list
 venv/bin/python3 -m pip install .
+rm -rf venv/docs
 # venv/bin/python3 -m pip list
 # venv/bin/python3 -m pip uninstall -y setuptools
 # remove all pycaches
 find venv -name __pycache__ -type d -prune -exec rm -rf {} +
-# seek pyo file and pyc file to delete it
+# seek pyo file and pyc files to delete them
 find venv -name '*.py[co]' -delete
+# Notice that FILES_TO_INSTALL will contain . which needs to be skipped
+# Also skip paths with space in the name
+(cd venv && find -name "* *" -prune -o -type f -print -o -type l -print) > FILES_TO_INSTALL
+
+# Get development packages
+venv/bin/python3 -m pip install .[dev]
+
+if test -e docs; then
+  (. venv/bin/activate && make -C docs html)
+  rm -rf docs/build/.doctrees
+  ln -sf build docs/%{docs}
+  (cd docs && zip -r ../venv/docs.zip %{docs})
+  rm docs/%{docs}
+  echo "./docs.zip" >> FILES_TO_INSTALL
+fi
 
 %install
 # Create directories
 install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted "$RPM_BUILD_ROOT/usr/local/bin"
 
-cp -r venv/* "$RPM_BUILD_ROOT"@target_quoted/
+# Copy the whole of venv
+(cd venv && tar -T ../FILES_TO_INSTALL -cpf-) | (cd "$RPM_BUILD_ROOT"@target_quoted/ && tar -xpf-)
+
+@python_shell -c '
+import sys
+for line in sys.stdin:
+  if line == ".\n":
+    continue
+  sys.stdout.write(sys.argv[1] + line[1:])
+' @target_quoted < FILES_TO_INSTALL > INSTALLED_FILES
+# echo @target_quoted > INSTALLED_FILES
+
+# Update #! lines that refer to something in venv
 TMP=`realpath venv`
 INSTALL_TARGET=@target_quoted
 grep -arl -- "$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
@@ -61,8 +90,7 @@ for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True):
     sys.stdout.write(line.replace(sys.argv[1], sys.argv[2]))
 ' "$TMP" "$INSTALL_TARGET"
 
-echo @target_quoted > INSTALLED_FILES
-
+# Put symbolic links to scripts in /usr/local/bin
 for script in @scripts_shell; do
    ln -s @target_quoted/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
 done
@@ -85,6 +113,8 @@ rm -rf -- "$RPM_BUILD_ROOT"
 
 %post
 # Generate __pycache__
+find @target_quoted -name __pycache__ -type d -prune -exec rm -rf {} +
+find @target_quoted -name '*.py[co]' -delete
 for script in @scripts_shell; do
   @target_quoted/"$script" --version > /dev/null
 done
