@@ -57,8 +57,8 @@ venv/bin/python3 -m pip install .[dev]
 
 if test -e docs; then
   (. venv/bin/activate && make -C docs html)
-  rm -rf docs/build/.doctrees
-  ln -sf build docs/%{docs}
+  # rm -rf docs/build/.doctrees
+  ln -sf build/html docs/%{docs}
   (cd docs && zip -r ../venv/docs.zip %{docs})
   rm docs/%{docs}
   echo "./docs.zip" >> FILES_TO_INSTALL
