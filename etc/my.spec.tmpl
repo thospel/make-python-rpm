@@ -43,6 +43,7 @@ venv/bin/python3 -m pip install .
 # venv/bin/python3 -m pip list
 # venv/bin/python3 -m pip uninstall -y setuptools
 # remove all pycaches
+venv/bin/python3 -m pip freeze > venv/requirements.txt
 find venv -name __pycache__ -type d -prune -exec rm -rf {} +
 # seek pyo file and pyc file to delete it
 find venv -name '*.py[co]' -delete
