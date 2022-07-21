@@ -140,7 +140,6 @@ def info_from_package(rpm_package: str, must_exist = True) -> Dict[str, str]:
     if not must_exist:
         if rpm_info.strip() == "package %s is not installed" % rpm_package:
             return {}
-        print("Different")
     match = re.fullmatch(r"""
     (
     (?:

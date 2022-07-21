@@ -56,7 +56,7 @@ cp -r venv/etc "$RPM_BUILD_ROOT"@target_quoted/
 cp -r venv/bin/make-python-rpm "$RPM_BUILD_ROOT"@target_quoted/bin/
 TMP=`realpath venv`/bin/
 INSTALL_TARGET="/usr/bin/env "
-grep -arl -- "$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
+grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
 import fileinput
 import sys
 import re

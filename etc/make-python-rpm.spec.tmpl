@@ -45,7 +45,7 @@ rm -rf venv/docs
 # venv/bin/python3 -m pip list
 # venv/bin/python3 -m pip uninstall -y setuptools
 # remove all pycaches
-# venv/bin/python3 -m pip freeze > venv/requirements.txt
+venv/bin/python3 -m pip freeze > venv/requirements.txt
 find venv -name __pycache__ -type d -prune -exec rm -rf {} +
 # seek pyo file and pyc files to delete them
 find venv -name '*.py[co]' -delete
@@ -72,19 +72,19 @@ install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted "$RPM_BUILD_ROOT/usr/local/bi
 # Copy the whole of venv
 (cd venv && tar -T ../FILES_TO_INSTALL -cpf-) | (cd "$RPM_BUILD_ROOT"@target_quoted/ && tar -xpf-)
 
-@python_shell -c '
-import sys
-for line in sys.stdin:
-  if line == ".\n":
-    continue
-  sys.stdout.write(sys.argv[1] + line[1:])
-' @target_quoted < FILES_TO_INSTALL > INSTALLED_FILES
-# echo @target_quoted > INSTALLED_FILES
+# @python_shell -c '
+# import sys
+# for line in sys.stdin:
+#  if line == ".\n":
+#    continue
+#  sys.stdout.write(sys.argv[1] + line[1:])
+#' @target_quoted < FILES_TO_INSTALL > INSTALLED_FILES
+echo @target_quoted > INSTALLED_FILES
 
 # Update #! lines that refer to something in venv
 TMP=`realpath venv`
 INSTALL_TARGET=@target_quoted
-grep -arl -- "$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
+grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
 import fileinput
 import sys
 for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True):
@@ -94,8 +94,9 @@ for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True):
 # Put symbolic links to scripts in /usr/local/bin
 for script in @scripts_shell; do
    ln -s @target_quoted/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
+   base=`basename "$script"`
+   echo "/usr/local/bin/$base" >> INSTALLED_FILES
 done
-echo /usr/local/bin >> INSTALLED_FILES
 
 %check
 venv/bin/python3 -m pip install safety
