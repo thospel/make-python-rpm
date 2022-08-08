@@ -1,0 +1,53 @@
+#!/usr/bin/make -f
+
+# See debhelper(7) (uncomment to enable).
+# Output every command that modifies files on the build system.
+#export DH_VERBOSE = 1
+
+# See FEATURE AREAS in dpkg-buildflags(1).
+#export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# See ENVIRONMENT in dpkg-buildflags(1).
+# Package maintainers to append CFLAGS.
+#export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
+# Package maintainers to append LDFLAGS.
+#export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
+# DEB_BUILD_OPTIONS=nostrip
+
+.ONESHELL:
+.SHELLFLAGS=-exc
+
+.SILENT: override_dh_auto_clean override_dh_auto_configure override_dh_auto_build override_dh_auto_binary override_dh_auto_test
+
+%:
+	dh $@@
+
+override_dh_auto_clean:
+	rm -rf venv
+
+override_dh_auto_configure:
+	:
+
+override_dh_auto_build:
+@build
+
+override_dh_auto_test:
+	rm -rf venv_backup
+	cp -a venv venv_backup
+@check
+	if test -e venv/docs.zip; then
+	    cp -a venv/docs.zip venv_backup/
+	fi
+	rm -rf venv
+	mv venv_backup venv
+
+override_dh_auto_install:
+	RPM_BUILD_ROOT=debian/@Name
+@install
+
+override_dh_usrlocal:
+	:
+
+override_dh_dwz:
+	:

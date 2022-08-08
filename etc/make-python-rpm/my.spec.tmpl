@@ -39,7 +39,13 @@ Url: @URL
 venv/bin/python3 -m pip install --upgrade pip
 # venv/bin/python3 -m pip install --upgrade setuptools
 # venv/bin/python3 -m pip list
+
+# editable install does not replace - with _ if pyproject.toml exists
+# touch pyproject.toml
 venv/bin/python3 -m pip install .
+test -e venv/etc/make_python_rpm && mv venv/etc/make_python_rpm venv/etc/make-python-rpm
+
+rm -rf venv/docs
 # venv/bin/python3 -m pip list
 # venv/bin/python3 -m pip uninstall -y setuptools
 # remove all pycaches
@@ -50,7 +56,8 @@ find venv -name '*.py[co]' -delete
 
 %install
 # Create directories
-install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted/{bin,etc}
+install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted/bin
+install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted/etc
 
 cp -r venv/etc "$RPM_BUILD_ROOT"@target_quoted/
 cp -r venv/bin/make-python-rpm "$RPM_BUILD_ROOT"@target_quoted/bin/
@@ -60,8 +67,7 @@ grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
 import fileinput
 import sys
 import re
-for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True):
-    sys.stdout.write(re.sub(r"(%%\(prog\)s\s+)[^\x27\x22]+", r"\g<1>" + sys.argv[3], line).replace(sys.argv[1], sys.argv[2]))
+for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(re.sub(r"(%%\(prog\)s\s+)[^\x27\x22]+", r"\g<1>" + sys.argv[3], line).replace(sys.argv[1], sys.argv[2]))
 ' "$TMP" "$INSTALL_TARGET" '%{version}'
 
 echo @target_quoted > INSTALLED_FILES
@@ -69,7 +75,7 @@ echo @target_quoted > INSTALLED_FILES
 %check
 # autoflake needs setuptools
 venv/bin/python3 -m pip install setuptools
-venv/bin/python3 -m pip install safety mypy autoflake
+venv/bin/python3 -m pip install safety mypy autoflake types-setuptools
 venv/bin/python3 -m safety check
 venv/bin/python3 -m mypy @scripts_shell
 venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell
@@ -79,18 +85,6 @@ done
 
 %clean
 rm -rf -- "$RPM_BUILD_ROOT"
-
-%post
-# Generate __pycache__
-for script in @scripts_shell; do
-  @target_quoted/"$script" --version > /dev/null
-done
-
-%preun
-# remove all __pycache__
-find @target_quoted -name __pycache__ -type d -prune -exec rm -rf {} +
-# seek pyo file and pyc file to delete it
-find @target_quoted -name '*.py[co]' -delete
 
 %files -f INSTALLED_FILES
 %defattr(-,root,root)

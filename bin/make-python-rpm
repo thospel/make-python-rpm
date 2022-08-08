@@ -9,11 +9,15 @@ import shutil
 import getpass
 import pwd
 import platform
+import socket
+from datetime import datetime
 from pathlib import Path
 from string import Template
 from collections import ChainMap
-from setuptools.dist import Distribution        	# type: ignore
-from typing import Dict, List, Set, Tuple
+from stat import S_IXUSR
+from setuptools.dist import Distribution
+from dataclasses import dataclass, field
+from typing import Dict, List, Set, Tuple, ClassVar
 # We want this to work in plain python without external modules
 # So avoid docopt
 import argparse
@@ -22,14 +26,21 @@ DIST = Distribution()
 DIST.parse_config_files()
 # pprint(DIST.install_requires)
 
-TEMPLATE_FILE = str(Path(__file__).parents[1] / "etc" / "make-python-rpm.spec.tmpl")
+RPM	= "rpm"
+DEB	= "deb"
+
+TEMPLATE_DIR  = Path(__file__).parents[1] / "etc" / "make-python-rpm"
+TEMPLATE_FILE = str(TEMPLATE_DIR / "spec.tmpl")
 ORGANIZATION_DIR = "/usr/local/lib"
-VENDOR = "%s <%s>" % (DIST.get_contact(), DIST.get_contact_email())
-TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())
+VENDOR = "%s <%s>" % (DIST.get_contact(), DIST.get_contact_email())	# type: ignore[attr-defined]
+TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())	# type: ignore[attr-defined]
 GROUP  = "Development/Libraries"
 FULL   = "-full"
 
+DEBIAN_VERSION = "/etc/debian_version"
+
 defaults = {
+    "format":	RPM,
     "target":   TARGET,
     "git":      "",
     "template": TEMPLATE_FILE,
@@ -39,20 +50,39 @@ defaults = {
 
 for name in defaults:
     try:
-        defaults[name] = DIST.command_options["make_python_rpm"][name][1]
+        defaults[name] = DIST.command_options["make_python_rpm"][name][1]	# type: ignore[attr-defined]
     except KeyError:
         pass
+
+class MakeChainMap(ChainMap):
+    def __getitem__(self, key):
+        """Escape $ in all values to $$"""
+        return super().__getitem__(key).replace("$", "$$")
+
+SENTINEL_DICT: Dict[str, str] = {}
+class AtTemplate(Template):
+    """A Template subclass that uses @ as delimiter"""
+    delimiter = "@"
+
+class MakeTemplate(AtTemplate):
+    """A Template subclass that uses @ as delimiter and replaces $ by $$ in all substituted value"""
+    def substitute(self, mapping=SENTINEL_DICT, **kws):
+        """Escape % in all substituted values to %%"""
+        if mapping is SENTINEL_DICT:
+            mapping = MakeChainMap(kws)
+        elif kws:
+            mapping = MakeChainMap(kws, mapping)
+        else:
+            mapping = MakeChainMap(mapping)
+        return super().substitute(mapping)
 
 class SpecChainMap(ChainMap):
     def __getitem__(self, key):
         """Escape % in all values to %%"""
         return super().__getitem__(key).replace("%", "%%")
 
-SENTINEL_DICT: Dict[str, str] = {}
-class SpecTemplate(Template):
+class SpecTemplate(AtTemplate):
     """A Template subclass that uses @ as delimiter and replaces % by %% in all substituted value"""
-    delimiter = "@"
-
     def substitute(self, mapping=SENTINEL_DICT, **kws):
         """Escape % in all substituted values to %%"""
         if mapping is SENTINEL_DICT:
@@ -86,7 +116,7 @@ def run(*args: str,
         error = result.stderr.strip()
         if expect_error is not None:
             if error not in expect_error:
-                raise SystemExit("Unexpected error from '%s': %s" % (command, error))
+                raise SystemExit(f"Unexpected error from {command!r}: {error!r}")
         elif error:
             raise SystemExit("Error from '%s': %s" % (command, error))
     if result.returncode not in expect_returncode:
@@ -130,13 +160,14 @@ def git_branch() -> str:
         branch = branch[11:]
     return branch
 
-def info_from_package(rpm_package: str, must_exist = True) -> Dict[str, str]:
+def info_from_package_rpm(rpm_package: str, must_exist = True) -> Dict[str, str]:
     """Return info of a given package"""
 
+    cmd_info = ["rpm", "-qi", "--", rpm_package]
     if must_exist:
-        rpm_info = run("rpm", "-qi", "--", rpm_package)
+        rpm_info = run(*cmd_info)
     else:
-        rpm_info = run("rpm", "-qi", "--", rpm_package, expect_returncode = { 0, 1 })
+        rpm_info = run(*cmd_info, expect_returncode = { 0, 1 })
     if not must_exist:
         if rpm_info.strip() == "package %s is not installed" % rpm_package:
             return {}
@@ -176,17 +207,80 @@ def info_from_package(rpm_package: str, must_exist = True) -> Dict[str, str]:
     values = (value.strip() for value in iter)
     return dict(zip(keys, values))
 
-def package_from_file(path: str) -> Dict[str, str]:
+def info_from_package_deb(deb_package: str, must_exist = True) -> Dict[str, str]:
+    """Return info of a given package"""
+    cmd_info = ["dpkg-query", "-f", "Name: ${binary:Package}\\nVersion: ${Version}\\nArchitecture: ${Architecture}\\nURL: ${Homepage}\\nSection: ${Section}\\nVendor: ${Maintainer}\\nSize: ${Size}\\nDescription: ${Description}\n",
+                "-W", deb_package]
+    if must_exist:
+        deb_info = run(*cmd_info)
+    else:
+        deb_info = run(*cmd_info,
+                       expect_returncode = { 0, 1 },
+                       expect_error = { "", "dpkg-query: no packages found matching %s" % deb_package })
+        if not deb_info:
+            return {}
+    match = re.fullmatch(r"""
+    (
+    (?:
+    ^                        # Start a new line
+    [A-Z] [^\n:]* [^\s:]     # Key
+    [^\S\n] * : [ ]          # Separator
+    .* \n                    # Value
+    )+?
+    )
+    Description\s* :         # Final key
+    ([^\0]*)                 # Final value
+    """, deb_info, flags = re.ASCII | re.MULTILINE | re.VERBOSE)
+    if not match:
+        raise ValueError("Cannot parse output of dpkg-query -W -- %s" % deb_package)
+    description = match.group(2).strip()
+    key_values = re.split(r"""
+    (^ [A-Z] [^\n:]* [^\s:]) # Key
+    [^\S\n] * : [ ]          # Separator
+    """, match.group(1), flags = re.ASCII | re.MULTILINE | re.VERBOSE)
+    # The previous fullmatch forces the result to be an empty string
+    # followed by key/value pairs
+    # print(key_values)
+    if len(key_values) % 2 == 0:
+        raise AssertionError("Not an even number of properties")
+    key_values.extend((
+        "description", description,
+    ))
+    iter = (s for s in key_values)
+    if next(iter) != "":
+        raise AssertionError("First element is not empty")
+    # Convert keys to lowercase and replace whitespace by _
+    keys = ("_".join(key.split()).casefold() for key in iter)
+    # Strip leading and trailing spaces from values
+    values = (value.strip() for value in iter)
+    info = dict(zip(keys, values))
+    # Debian versions are of the form
+    # [epoch:]upstream_version[-debian_revision]
+    # Here we split off the debian_revision as release
+    info["version"], _, info["release"] = info["version"].partition("-")
+    return info
+
+def package_from_file(path: str, format: str = RPM) -> Dict[str, str]:
     """Given a path determine which RPM package that file comes from and return
     the properties of that package
     """
 
     real_path = os.path.realpath(path)
-    rpm_package = run("rpm", "-qf", "--", real_path).strip()
-    info = info_from_package(rpm_package)
+    if format == RPM:
+        package = run("rpm", "-qf", "--", real_path).strip()
+        info = info_from_package_rpm(package)
+    elif format == DEB:
+        dpkg_out = run("dpkg", "-S", "--", real_path).strip()
+        package, colon, _ = dpkg_out.partition(":")
+        if colon != ":":
+            raise AssertionError("Could not find colon in dpkg output '%s'", dpkg_out)
+        info = info_from_package_deb(package)
+    else:
+        raise AssertionError("Unhandled package format '%s'" % format)
+
     info.update({
         # Initial _ makes certain it can't be overwritten by a package property
-        "_package": rpm_package,
+        "_package": package,
         "_path": path,
         "_path_shell": shlex.quote(path),
         "_path_real": real_path,
@@ -203,13 +297,188 @@ def real_home() -> str:
     """Get real path of user home directory based on effective uid (ignoring environment)"""
     return os.path.realpath(pwd.getpwuid(os.geteuid()).pw_dir)
 
-def full_rpm(target: str = TARGET,
-             template: str = TEMPLATE_FILE,
-             git: str = "",
-             release: int = None,
-             group: str = GROUP,
-             vendor: str = VENDOR,
-             spec_only: bool = False) -> None:
+def make_rpm(package_dir: Path,
+             dist_dir: Path,
+             spec_file: Path,
+             package_variables: Dict[str, str]) -> None:
+    for dir in "RPMS", "SRPMS":
+        os.mkdir("%s/%s" % (package_dir, dir))
+
+    run("rpmbuild", "-ba",
+        "--define", "debug_package %{nil}",
+        "--define", "__python python3",
+        "--define", "_topdir %s" % package_dir.resolve(),
+        "--clean",
+        str(spec_file),
+        capture_output = False)
+
+    found = 0
+    rpm_dir = package_dir / "SRPMS"
+    for rpm in rpm_dir.iterdir():
+        if rpm.suffix.casefold() != ".rpm":
+            continue
+        if not rpm.is_file():
+            raise(ValueError("Path '%s' is not a file" % rpm))
+        shutil.copy(rpm, dist_dir)
+        print("Created", dist_dir / rpm.name)
+        found += 1
+    if not found:
+        raise ValueError(f"No valid rpm  in {rpm_dir}")
+
+    found = 0
+    rpm_dir = package_dir / "RPMS" / package_variables["architecture"]
+    for rpm in rpm_dir.iterdir():
+        if rpm.suffix.casefold() != ".rpm":
+            continue
+        if not rpm.is_file():
+            raise(ValueError("Path '%s' is not a file" % rpm))
+        shutil.copy(rpm, dist_dir)
+        print("Created", dist_dir / rpm.name)
+        found += 1
+    if not found:
+        raise ValueError(f"No valid rpm  in {rpm_dir}")
+
+# Extremely simplified RPM spec file parser
+@dataclass
+class Spec:
+    BASE_SECTION: ClassVar[str] = "base"
+
+    spec_file: Path
+    sections: Dict[str, List[str]] = field(init = False, default_factory = dict)
+    settings: Dict[str, str] = field(init = False, default_factory = dict)
+
+    def __post_init__(self):
+        with open(DEBIAN_VERSION) as version_file:
+            # E.g. get `sid` from `bookworm/sid`
+            # distribution = next(version_file)strip().split("/", maxsplit=1)[0]
+            distribution = next(version_file).strip().split("/", maxsplit=2)[1]
+        now = datetime.now().astimezone()
+        variables: Dict[str, str] = dict(
+            date	= now.strftime("%a, %d %b %Y %H:%M:%S %z"),
+            user	= getpass.getuser(),
+            fqdn	= socket.getfqdn(),
+            script_name = str(Path(sys.argv[0]).name),
+            distribution= distribution,
+        )
+
+        section_name = self.BASE_SECTION
+        self.sections[section_name] = []
+
+        def substitute(match: re.Match):
+            if match[1] is None:
+                return "%"
+            if match[1].startswith(("?", "_")):
+                return "Unimplemented"
+            return variables[match[1]]
+
+        with open(self.spec_file) as handle:
+            for line in handle:
+                line = re.sub(r"%(?:%|\{([^{}]*)\})", substitute, line.rstrip())
+                if match := re.match(r"%(\w+)(\s+|$|(?=\())", line):
+                    if match[1] == "define":
+                        _, name, value = line.split(maxsplit = 2)
+                        variables[name] = value
+                    elif match[1] in ("description", "prep", "build", "install", "check", "clean", "post", "preun"):
+                        section_name = match[1]
+                        if section_name in self.sections:
+                            raise RuntimeError(f"Duplicate section {section_name!r}")
+                        self.sections[section_name] = []
+                    elif match[1] in ("setup", "files", "defattr"):
+                        # Directive we (currently) ignore
+                        pass
+                    else:
+                        raise NotImplementedError(f"{match=}")
+                    continue
+                # Remove leading empty lines
+                if line or self.sections[section_name]:
+                    self.sections[section_name].append(line)
+
+        # Remove trailing empty lines
+        for section in self.sections.values():
+            while section and not section[-1]:
+                section.pop()
+
+        self.settings = variables
+        for line in self.sections[self.BASE_SECTION]:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.fullmatch(r"^(\w+):\s*(.*)", line)
+            if not match:
+                raise RuntimeError("Cannot parse base section {line=}")
+            self.settings[match[1]] = match[2]
+
+        for section_name, section in self.sections.items():
+            if section_name == self.BASE_SECTION:
+                continue
+            self.settings[section_name] = "\n".join("\t%s" % line if line else "" for line in section)
+        # print(self.settings)
+
+    def print_sections(self):
+        print("Settings", self.settings)
+        for section, lines in self.sections.items():
+            if section == self.BASE_SECTION:
+                continue
+            print(f"{section=}\n============")
+            for line in lines:
+                print(line)
+
+    def make_debian(self, debian_dir: Path, templates: Path):
+        debian_dir.mkdir()
+        for file in templates.glob("*.tmpl"):
+            if file.name.startswith("."):
+                continue
+            template_class = MakeTemplate if file.stem == "rules" else AtTemplate
+            template = template_class(file.read_text())
+            try:
+                output = template.substitute(self.settings)
+            except KeyError as exc:
+                print(f"Not generating debian/{file.stem} (no variable named {exc})")
+                continue
+
+            executable = file.stat().st_mode & S_IXUSR != 0
+            output_file = debian_dir / file.stem
+            with open(os.open(output_file, os.O_CREAT | os.O_WRONLY, 0o777 if executable else 0o666), "w") as output_handle:
+                output_handle.write(output)
+
+def make_deb(package_dir: Path,
+             dist_dir: Path,
+             spec_file: Path,
+             templates: Path,
+             package_variables: Dict[str, str]) -> None:
+    spec = Spec(spec_file)
+    # spec.print_sections()
+
+    build_dir = package_dir / "BUILD"
+    sources_dir = package_dir / "SOURCES"
+    run("tar", "-C", str(build_dir), "-xf", str(sources_dir / package_variables["source"]))
+    tar_dirs = list(build_dir.iterdir())
+    if len(tar_dirs) != 1:
+        raise AssertionError(f"Expected exectly 1 direcroy in tar file, got {tar_dirs!r}")
+    deb_dir = tar_dirs[0]
+    spec.make_debian(deb_dir / "debian", templates)
+    command = "debuild -i -us -uc -b"
+    result = subprocess.run(command.split(), cwd = deb_dir)
+    if result.returncode:
+        raise SystemExit("'%s' exited with unexpected returncode %d" %
+                         (command, result.returncode))
+    for deb in build_dir.iterdir():
+        if deb.suffix.casefold() != ".deb":
+            continue
+        if not deb.is_file():
+            raise(ValueError("Path '%s' is not a file" % deb))
+        shutil.copy(deb, dist_dir)
+        print("Created", dist_dir / deb.name)
+
+def full_package(
+        format: str = RPM,
+        target: str = TARGET,
+        template: str = TEMPLATE_FILE,
+        git: str = "",
+        release: int = None,
+        group: str = GROUP,
+        vendor: str = VENDOR,
+        spec_only: bool = False) -> None:
 
     if os.geteuid() == 0:
         raise SystemExit("Please do not run this script as user root")
@@ -217,7 +486,7 @@ def full_rpm(target: str = TARGET,
     if sys.version_info < (3, 8):
         raise SystemExit("Python 3.8 or later is required")
 
-    version = DIST.get_version()
+    version = DIST.get_version()	# type: ignore[attr-defined]
 
     if git:
         # Check git branch
@@ -252,11 +521,11 @@ def full_rpm(target: str = TARGET,
         except OSError as e:
             if e.errno != errno.EINVAL:
                 raise
-            raise SystemExit("You are running this script with python executable '%s' which in the end points to '%s' which in turn is inside your home directory '%s'. I will not create an RPM based on a private python version" % (sys.executable, python_unwrapped, home)) from None
+            raise SystemExit("You are running this script with python executable '%s' which in the end points to '%s' which in turn is inside your home directory '%s'. I will not create an package based on a private python version" % (sys.executable, python_unwrapped, home)) from None
         python_unwrapped = python_unwrapped = os.path.join(dir_unwrapped, link)
     if python_unwrapped != sys.executable:
         print("You are probably running inside a virtual environment. I followed some symlinks and will use '%s' is the target python" % python_unwrapped)
-    python_package = package_from_file(python_unwrapped)
+    python_package = package_from_file(python_unwrapped, format = format)
 
     # We probably don't really need to add pip in the dependencies
     # E.g. the whole rpm build can be done using a pip from PYPI
@@ -268,33 +537,45 @@ import pip
 print(sys.modules["pip"].__file__)
     """).strip()
     # We should probably handle the case that there is no pip package...
-    pip_package = package_from_file(pip_file)
+    pip_package = package_from_file(pip_file, format = format)
     # We should probably handle the case that the python and pip package are the same...
 
     # DIST.parse_command_line()
 
     # Add suffix -full to indicate that it has all dependencies and differs
     # from what bdist_rpm generates
-    package_name = DIST.get_name() + FULL
+    package_name = DIST.get_name() + FULL	# type: ignore[attr-defined]
     package_version = version.replace("-", "_")
     architecture = python_package["architecture"]
-    license = DIST.get_license() or "UNKNOWN"
+    license = DIST.get_license() or "UNKNOWN"	# type: ignore[attr-defined]
     # If no explicit license try to get it from a classifier
     if license.casefold() == "unknown":
-        for classifier in DIST.get_classifiers():
+        for classifier in DIST.get_classifiers():	# type: ignore[attr-defined]
             match = re.fullmatch(r"^License\s*::\s*(\S.*)", classifier, re.IGNORECASE)
             if match:
                 license = match.group(1).rstrip()
                 break
     if release is None:
-        old_package = info_from_package("%s-%s" % (package_name, package_version), must_exist = False)
+        if format == RPM:
+            old_package = info_from_package_rpm(
+                "%s-%s" % (package_name, package_version),
+                must_exist = False)
+        elif format == DEB:
+            old_package = info_from_package_deb(
+                "%s" % package_name,
+                must_exist = False)
+            if old_package and old_package["version"] != package_version:
+                old_package = {}
+        else:
+            raise AssertionError("Unhandled package format '%s'" % format)
+
         if old_package:
             release = 1 + int(old_package["release"])
         else:
             release = 1
 
     scripts: List[str] = []
-    for script in DIST.command_options["options"]["scripts"]:
+    for script in DIST.command_options["options"]["scripts"]:	# type: ignore[attr-defined]
         script = script.strip()
         if not script.startswith("bin/"):
             continue
@@ -303,88 +584,76 @@ print(sys.modules["pip"].__file__)
         scripts.append(script)
 
     dist_dir = Path("dist")
-    build_dir = "build/full_rpm.%s" % platform.platform(aliased = True, terse = True)
-    os.makedirs(build_dir, exist_ok=True)
+    dist_dir.mkdir(parents = True, exist_ok = True)
+
+    build_dir = Path("build/full_package.%s" % platform.platform(aliased = True, terse = True))
+    build_dir.mkdir(parents = True, exist_ok=True)
     shutil.rmtree(build_dir)
     os.umask(0o22)
-    os.mkdir(build_dir)
-    rpm_dir = "%s/rpm" % build_dir
-    os.mkdir(rpm_dir)
-    for dir in "BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS":
-        os.mkdir("%s/%s" % (rpm_dir, dir))
+    build_dir.mkdir()
+    package_dir = build_dir / format
+    package_dir.mkdir()
 
-    source_dir = "%s/SOURCES" % rpm_dir
-    force_version = ["egg_info", "-b", patch, "-e", build_dir] if patch else []
+    for dir in "SOURCES", "SPECS", "BUILD":
+        (package_dir / dir).mkdir()
+
+    source_dir = package_dir / "SOURCES"
+    force_version = ["egg_info", "-b", patch, "-e", str(build_dir)] if patch else []
     run(python_unwrapped,
-        "setup.py", *force_version, "sdist", "--dist-dir", source_dir,
+        "setup.py", *force_version, "sdist", "--dist-dir", str(source_dir),
         capture_output = False)
-    with os.scandir(source_dir) as sources:
-        source = next(sources)
-        if not source.is_file():
-            raise(ValueError("sdist result '%s' is not a file" % source.path))
-        extra = next(sources, None)
-        if extra is not None:
-            raise(ValueError("Spurious sdist result '%s'" % extra.path))
+    sources = source_dir.iterdir()
+    source = next(sources)
+    if not source.is_file():
+        raise(ValueError("sdist result '%s' is not a file" % source))
+    extra = next(sources, None)
+    if extra is not None:
+        raise(ValueError("Spurious sdist result '%s'" % extra))
 
-    spec_file = "%s/SPECS/%s.spec" % (rpm_dir, package_name)
+    package_variables: Dict[str, str] = dict(
+        name          = DIST.get_name(),	# type: ignore[attr-defined]
+        version       = version,
+        package_name  = package_name,
+        package_version = package_version,
+        release       = str(release),
+        architecture  = architecture,
+        description   = DIST.get_description(),	# type: ignore[attr-defined]
+        long_description = DIST.get_long_description().strip(),	# type: ignore[attr-defined]
+        group         = group,
+        license       = license,
+        vendor        = vendor,
+        packager      = get_pwd().pw_gecos,
+        source        = source.name,
+        URL           = DIST.get_url(),	# type: ignore[attr-defined]
+        requires      = ", ".join([python_package["name"], pip_package["name"]]),
+        python_shell  = python_package["_path_shell"],
+        target_quoted = shlex.quote(target),
+        scripts_shell = " ".join(map(shlex.quote, scripts)))
 
+    spec_file = package_dir / "SPECS" / f"{package_variables['package_name']}.spec"
     with open(template) as handle:
         spec_template = SpecTemplate(handle.read())
-    with open(spec_file, "w") as spec:
-        spec.write(spec_template.substitute(
-            name          = DIST.get_name(),
-            version       = version,
-            package_name  = package_name,
-            package_version = package_version,
-            release       = str(release),
-            architecture  = architecture,
-            description   = DIST.get_description(),
-            long_description = DIST.get_long_description().strip(),
-            group         = group,
-            license       = license,
-            vendor        = vendor,
-            packager      = get_pwd().pw_gecos,
-            source        = source.name,
-            URL           = DIST.get_url(),
-            requires      = ", ".join([python_package["name"], pip_package["name"]]),
-            python_shell  = python_package["_path_shell"],
-            target_quoted = shlex.quote(target),
-            scripts_shell = " ".join(map(shlex.quote, scripts)),
-        ))
+    spec_file.write_text(spec_template.substitute(**package_variables))
     if spec_only:
-        print("spec file", str(Path(spec_file).resolve()))
+        print(f"spec file {spec_file.resolve()}")
         return
 
-    run("rpmbuild", "-ba",
-        "--define", "debug_package %{nil}",
-        "--define", "__python python3",
-        "--define", "_topdir %s" % os.path.realpath(rpm_dir),
-        "--clean",
-        spec_file,
-        capture_output = False)
-
-    print("-" * 40)
-    os.makedirs(dist_dir, exist_ok=True)
-    with os.scandir("%s/SRPMS" % rpm_dir) as rpms:
-        for rpm in rpms:
-            if not rpm.name.casefold().endswith(".rpm"):
-                continue
-            if not rpm.is_file():
-                raise(ValueError("Path '%s' is not file" % rpm.path))
-            shutil.copy(rpm.path, dist_dir)
-            print("Created", dist_dir / rpm.name)
-    with os.scandir("%s/RPMS/%s" % (rpm_dir, architecture)) as rpms:
-        for rpm in rpms:
-            if not rpm.name.casefold().endswith(".rpm"):
-                continue
-            if not rpm.is_file():
-                raise(ValueError("Path '%s' is not file" % rpm.path))
-            shutil.copy(rpm.path, dist_dir)
-            print("Created", dist_dir / rpm.name)
+    if format == RPM:
+        make_rpm(package_dir, dist_dir, spec_file, package_variables)
+    elif format == DEB:
+        make_deb(package_dir, dist_dir, spec_file, TEMPLATE_DIR / format, package_variables)
+    else:
+        raise AssertionError("Unhandled package format '%s'" % format)
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(
         description='Create an RPM with all dependencies')
+    parser.add_argument(
+        "-F", "--format",
+        default = defaults["format"],
+        choices = [RPM, DEB],
+        metavar = "TEXT",
+        help = "What sort of package to generate [default: %s]" % defaults["format"])
     parser.add_argument(
         "--target",
         default = defaults["target"],
@@ -406,7 +675,7 @@ if __name__=='__main__':
         metavar = "TEXT",
         help = "Template to use to generate the spec file [default: %s]" % defaults["template"])
     parser.add_argument(
-        "--vendor",
+        "-V", "--vendor",
         default = defaults["vendor"],
         metavar = "TEXT",
         help = "This will become the vendor tag in the RPM [default: %s]" % defaults["vendor"])
@@ -419,7 +688,8 @@ if __name__=='__main__':
         "--spec-only",
         action = "store_true",
         help = "Only generate spec file")
+    # The version (1.0.0) will get updated while creating the package
     parser.add_argument('--version', action="version", version='%(prog)s 1.0.0')
     args = vars(parser.parse_args())
     # print(args)
-    full_rpm(**args)
+    full_package(**args)
