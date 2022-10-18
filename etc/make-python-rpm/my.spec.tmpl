@@ -67,7 +67,7 @@ grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
 import fileinput
 import sys
 import re
-for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(re.sub(r"(%%\(prog\)s\s+)[^\x27\x22]+", r"\g<1>" + sys.argv[3], line).replace(sys.argv[1], sys.argv[2]))
+for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(re.sub(r"(\bPACKAGE_VERSION\s*=\s*)([\x27\x22])[^\x27\x22\\]+\2", fr"\g<1>\g<2>{sys.argv[3]}\g<2>", line).replace(sys.argv[1], sys.argv[2]))
 ' "$TMP" "$INSTALL_TARGET" '%{version}'
 
 echo @target_quoted > INSTALLED_FILES
@@ -77,8 +77,12 @@ echo @target_quoted > INSTALLED_FILES
 venv/bin/python3 -m pip install setuptools
 venv/bin/python3 -m pip install safety mypy autoflake types-setuptools
 venv/bin/python3 -m safety check
-venv/bin/python3 -m mypy @scripts_shell
-venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell
+LIB=""
+if test -d lib; then
+  LIB=" lib"
+fi
+venv/bin/python3 -m mypy @scripts_shell$LIB
+venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell$LIB
 for script in @scripts_shell; do
    venv/bin/python3 "$script" --version > /dev/null
 done

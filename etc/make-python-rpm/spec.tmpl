@@ -88,8 +88,9 @@ INSTALL_TARGET=@target_quoted
 grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
 import fileinput
 import sys
-for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(line.replace(sys.argv[1], sys.argv[2]))
-' "$TMP" "$INSTALL_TARGET"
+import re
+for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(re.sub(r"(\bPACKAGE_VERSION\s*=\s*)([\x27\x22])[^\x27\x22\\]+\2", fr"\g<1>\g<2>{sys.argv[3]}\g<2>", line).replace(sys.argv[1], sys.argv[2]))
+' "$TMP" "$INSTALL_TARGET" '%{version}'
 
 if test "$INSTALL_TARGET" != /usr/local; then
     # Put symbolic links to scripts in /usr/local/bin
@@ -109,8 +110,12 @@ done
 # autoflake needs setuptools
 venv/bin/python3 -m pip install setuptools
 venv/bin/python3 -m pip install safety mypy autoflake types-setuptools
-venv/bin/python3 -m mypy @scripts_shell lib
-venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell lib
+LIB=""
+if test -d lib; then
+  LIB=" lib"
+fi
+venv/bin/python3 -m mypy @scripts_shell$LIB
+venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell$LIB
 
 %clean
 rm -rf -- "$RPM_BUILD_ROOT"

@@ -22,6 +22,9 @@ from typing import Dict, List, Set, Tuple, ClassVar
 # So avoid docopt
 import argparse
 
+# This number will automatically get replaced by make-python-rpm
+PACKAGE_VERSION = "1.0.0"
+
 DIST = Distribution()
 DIST.parse_config_files()
 # pprint(DIST.install_requires)
@@ -689,7 +692,7 @@ if __name__=='__main__':
         action = "store_true",
         help = "Only generate spec file")
     # The version (1.0.0) will get updated while creating the package
-    parser.add_argument('--version', action="version", version='%(prog)s 1.0.0')
+    parser.add_argument('--version', action="version", version=f"%(prog)s {PACKAGE_VERSION}")
     args = vars(parser.parse_args())
     # print(args)
     full_package(**args)
