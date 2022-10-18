@@ -91,12 +91,14 @@ import sys
 for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(line.replace(sys.argv[1], sys.argv[2]))
 ' "$TMP" "$INSTALL_TARGET"
 
-# Put symbolic links to scripts in /usr/local/bin
-for script in @scripts_shell; do
-   ln -s @target_quoted/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
-   base=`basename "$script"`
-   echo "/usr/local/bin/$base" >> INSTALLED_FILES
-done
+if test "$INSTALL_TARGET" != /usr/local; then
+    # Put symbolic links to scripts in /usr/local/bin
+    for script in @scripts_shell; do
+        ln -s @target_quoted/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
+        base=`basename "$script"`
+        echo "/usr/local/bin/$base" >> INSTALLED_FILES
+    done
+fi
 
 %check
 venv/bin/python3 -m pip install safety
