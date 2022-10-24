@@ -57,20 +57,41 @@ find venv -name '*.py[co]' -delete
 %install
 # Create directories
 install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted/bin
-install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted/etc
 
-cp -r venv/etc "$RPM_BUILD_ROOT"@target_quoted/
-cp -r venv/bin/make-python-rpm "$RPM_BUILD_ROOT"@target_quoted/bin/
-TMP=`realpath venv`/bin/
-INSTALL_TARGET="/usr/bin/env "
+echo @target_quoted > INSTALLED_FILES
+
+INSTALL_TARGET=@target_quoted
+if test "$INSTALL_TARGET" = /usr/local; then
+    install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted/etc
+    cp -r venv/etc "$RPM_BUILD_ROOT"@target_quoted/
+    # Put scripts in /usr/local/bin
+    for script in @scripts_shell; do
+        cp -r venv/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
+    done
+else
+    # Copy the whole of venv
+    (cd venv && tar -T ../FILES_TO_INSTALL -cpf-) | (cd "$RPM_BUILD_ROOT"@target_quoted/ && tar -xpf-)
+    # Put symbolic links to scripts in /usr/local/bin
+    for script in @scripts_shell; do
+        ln -s @target_quoted/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
+        base=`basename "$script"`
+        echo "/usr/local/bin/$base" >> INSTALLED_FILES
+    done
+fi
+
+# Update #! lines that refer to something in venv
+FROM_PATH=`realpath venv`/bin/python3
+if test @executable_quoted; then
+    TO_PATH=@executable_quoted
+else
+    TO_PATH="$INSTALL_TARGET/bin/python3"
+fi
 grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
 import fileinput
 import sys
 import re
 for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(re.sub(r"(\bPACKAGE_VERSION\s*=\s*)([\x27\x22])[^\x27\x22\\]+\2", fr"\g<1>\g<2>{sys.argv[3]}\g<2>", line).replace(sys.argv[1], sys.argv[2]))
-' "$TMP" "$INSTALL_TARGET" '%{version}'
-
-echo @target_quoted > INSTALLED_FILES
+' "$FROM_PATH" "$TO_PATH" '%{version}'
 
 %check
 # autoflake needs setuptools
@@ -83,7 +104,13 @@ if test -d lib; then
 fi
 venv/bin/python3 -m mypy @scripts_shell$LIB
 venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell$LIB
+if test @executable_quoted; then
+    PYTHON=@executable_quoted
+else
+    PYTHON=venv/bin/python3
+fi
 for script in @scripts_shell; do
+   # "$PYTHON" "$script" --version > /dev/null
    venv/bin/python3 "$script" --version > /dev/null
 done
 

@@ -70,29 +70,19 @@ fi
 # Create directories
 install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted "$RPM_BUILD_ROOT/usr/local/bin"
 
-# Copy the whole of venv
-(cd venv && tar -T ../FILES_TO_INSTALL -cpf-) | (cd "$RPM_BUILD_ROOT"@target_quoted/ && tar -xpf-)
-
-# @python_shell -c '
-# import sys
-# for line in sys.stdin:
-#  if line == ".\n":
-#    continue
-#  sys.stdout.write(sys.argv[1] + line[1:])
-#' @target_quoted < FILES_TO_INSTALL > INSTALLED_FILES
 echo @target_quoted > INSTALLED_FILES
 
-# Update #! lines that refer to something in venv
-TMP=`realpath venv`
 INSTALL_TARGET=@target_quoted
-grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
-import fileinput
-import sys
-import re
-for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(re.sub(r"(\bPACKAGE_VERSION\s*=\s*)([\x27\x22])[^\x27\x22\\]+\2", fr"\g<1>\g<2>{sys.argv[3]}\g<2>", line).replace(sys.argv[1], sys.argv[2]))
-' "$TMP" "$INSTALL_TARGET" '%{version}'
-
-if test "$INSTALL_TARGET" != /usr/local; then
+if test "$INSTALL_TARGET" = /usr/local; then
+    install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted/etc
+    cp -r venv/etc "$RPM_BUILD_ROOT"@target_quoted/
+    # Put scripts in /usr/local/bin
+    for script in @scripts_shell; do
+        cp -r venv/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
+    done
+else
+    # Copy the whole of venv
+    (cd venv && tar -T ../FILES_TO_INSTALL -cpf-) | (cd "$RPM_BUILD_ROOT"@target_quoted/ && tar -xpf-)
     # Put symbolic links to scripts in /usr/local/bin
     for script in @scripts_shell; do
         ln -s @target_quoted/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
@@ -101,11 +91,30 @@ if test "$INSTALL_TARGET" != /usr/local; then
     done
 fi
 
+# Update #! lines that refer to something in venv
+FROM_PATH=`realpath venv`/bin/python3
+if test @executable_quoted; then
+    TO_PATH=@executable_quoted
+else
+    TO_PATH="$INSTALL_TARGET/bin/python3"
+fi
+grep -Irl -- "^#! *$TMP" "$RPM_BUILD_ROOT"@target_quoted | @python_shell -c '
+import fileinput
+import sys
+import re
+for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.stdout.write(re.sub(r"(\bPACKAGE_VERSION\s*=\s*)([\x27\x22])[^\x27\x22\\]+\2", fr"\g<1>\g<2>{sys.argv[3]}\g<2>", line).replace(sys.argv[1], sys.argv[2]))
+' "$FROM_PATH" "$TO_PATH" '%{version}'
+
 %check
 venv/bin/python3 -m pip install safety
 venv/bin/python3 -m safety check
+if test @executable_quoted; then
+    PYTHON=@executable_quoted
+else
+    PYTHON=venv/bin/python3
+fi
 for script in @scripts_shell; do
-   venv/bin/python3 "$script" --version > /dev/null
+   "$PYTHON" "$script" --version > /dev/null
 done
 # autoflake needs setuptools
 venv/bin/python3 -m pip install setuptools

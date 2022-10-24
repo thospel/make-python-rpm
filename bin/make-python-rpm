@@ -17,7 +17,7 @@ from collections import ChainMap
 from stat import S_IXUSR
 from setuptools.dist import Distribution
 from dataclasses import dataclass, field
-from typing import Dict, List, Set, Tuple, ClassVar
+from typing import Dict, List, Set, Tuple, Optional, ClassVar
 # We want this to work in plain python without external modules
 # So avoid docopt
 import argparse
@@ -49,6 +49,7 @@ defaults = {
     "template": TEMPLATE_FILE,
     "group":    GROUP,
     "vendor":   VENDOR,
+    "executable": None
 }
 
 for name in defaults:
@@ -481,6 +482,7 @@ def full_package(
         release: int = None,
         group: str = GROUP,
         vendor: str = VENDOR,
+        executable: Optional[str] = None,
         spec_only: bool = False) -> None:
 
     if os.geteuid() == 0:
@@ -612,6 +614,8 @@ print(sys.modules["pip"].__file__)
     extra = next(sources, None)
     if extra is not None:
         raise(ValueError("Spurious sdist result '%s'" % extra))
+    if executable is None:
+        executable = ""
 
     package_variables: Dict[str, str] = dict(
         name          = DIST.get_name(),	# type: ignore[attr-defined]
@@ -631,6 +635,7 @@ print(sys.modules["pip"].__file__)
         requires      = ", ".join([python_package["name"], pip_package["name"]]),
         python_shell  = python_package["_path_shell"],
         target_quoted = shlex.quote(target),
+        executable_quoted = shlex.quote(executable),
         scripts_shell = " ".join(map(shlex.quote, scripts)))
 
     spec_file = package_dir / "SPECS" / f"{package_variables['package_name']}.spec"
@@ -694,5 +699,6 @@ if __name__=='__main__':
     # The version (1.0.0) will get updated while creating the package
     parser.add_argument('--version', action="version", version=f"%(prog)s {PACKAGE_VERSION}")
     args = vars(parser.parse_args())
-    # print(args)
+    args["executable"] = defaults["executable"]
+    #print(f"{args=}")
     full_package(**args)
