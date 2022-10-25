@@ -49,6 +49,7 @@ defaults = {
     "template": TEMPLATE_FILE,
     "group":    GROUP,
     "vendor":   VENDOR,
+    "version_min": None,
     "executable": None
 }
 
@@ -483,13 +484,24 @@ def full_package(
         group: str = GROUP,
         vendor: str = VENDOR,
         executable: Optional[str] = None,
-        spec_only: bool = False) -> None:
+        spec_only: bool = False,
+        version_min: Optional[str] = None,
+        debug: bool = False) -> None:
 
     if os.geteuid() == 0:
         raise SystemExit("Please do not run this script as user root")
 
     if sys.version_info < (3, 8):
         raise SystemExit("Python 3.8 or later is required")
+
+    if version_min:
+        from pkg_resources import packaging	# type: ignore[attr-defined]
+        Version = packaging.version.Version
+        # from packaging.version import Version
+        if Version(version_min) > Version(PACKAGE_VERSION):
+            raise SystemExit(f"Version check failed: {version_min} > {PACKAGE_VERSION}")
+        if debug:
+            print(f"Version check succeeded: {version_min} <= {PACKAGE_VERSION}")
 
     version = DIST.get_version()	# type: ignore[attr-defined]
 
@@ -696,9 +708,19 @@ if __name__=='__main__':
         "--spec-only",
         action = "store_true",
         help = "Only generate spec file")
+    parser.add_argument(
+        "--version-min",
+        default = defaults["version_min"],
+        metavar = "TEXT",
+        help = "Minimum required version of this program")
+    parser.add_argument(
+        "--debug",
+        action = "store_true",
+        help = "Inform about internal actions")
     # The version (1.0.0) will get updated while creating the package
     parser.add_argument('--version', action="version", version=f"%(prog)s {PACKAGE_VERSION}")
     args = vars(parser.parse_args())
     args["executable"] = defaults["executable"]
-    #print(f"{args=}")
+    if args["debug"]:
+        print(f"{args=}")
     full_package(**args)
