@@ -44,7 +44,7 @@ DEV_PROGRAMS = ["mypy", "safety", "autoflake", "sphinx"]
 DEBIAN_VERSION = "/etc/debian_version"
 
 defaults = {
-    "format":	RPM,
+    "format":	DEB if Path(DEBIAN_VERSION).exists() else RPM,
     "target":   TARGET,
     "git":      "",
     "template": TEMPLATE_FILE,

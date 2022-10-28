@@ -47,8 +47,11 @@ venv/bin/python3 -m pip install .
 rm -rf venv/docs
 # venv/bin/python3 -m pip list
 # venv/bin/python3 -m pip uninstall -y setuptools
+
+# extra cat to ignore exitcode of grep
+venv/bin/python3 -m pip freeze | grep -v " @@ file:/" | cat > venv/requirements.txt
+
 # remove all pycaches
-venv/bin/python3 -m pip freeze | grep -v " @@ file:/" > venv/requirements.txt
 find venv -name __pycache__ -type d -prune -exec rm -rf {} +
 # seek pyo file and pyc files to delete them
 find venv -name '*.py[co]' -delete

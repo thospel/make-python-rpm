@@ -48,8 +48,11 @@ test -e venv/etc/make_python_rpm && mv venv/etc/make_python_rpm venv/etc/make-py
 rm -rf venv/docs
 # venv/bin/python3 -m pip list
 # venv/bin/python3 -m pip uninstall -y setuptools
+
+# extra cat to ignore exitcode of grep
+venv/bin/python3 -m pip freeze | grep -v " @@ file:/" | cat > venv/requirements.txt
+
 # remove all pycaches
-venv/bin/python3 -m pip freeze | grep -v " @@ file:/" > venv/requirements.txt
 find venv -name __pycache__ -type d -prune -exec rm -rf {} +
 # seek pyo file and pyc file to delete it
 find venv -name '*.py[co]' -delete
