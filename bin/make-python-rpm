@@ -23,7 +23,7 @@ from typing import Dict, List, Set, Tuple, Optional, ClassVar
 import argparse
 
 # This number will automatically get replaced by make-python-rpm
-PACKAGE_VERSION = "1.0.0"
+PACKAGE_VERSION = "1.0.13"
 
 DIST = Distribution()
 DIST.parse_config_files()
@@ -39,6 +39,7 @@ VENDOR = "%s <%s>" % (DIST.get_contact(), DIST.get_contact_email())	# type: igno
 TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())	# type: ignore[attr-defined]
 GROUP  = "Development/Libraries"
 FULL   = "-full"
+DEV_PROGRAMS = ["mypy", "safety", "autoflake", "sphinx"]
 
 DEBIAN_VERSION = "/etc/debian_version"
 
@@ -53,9 +54,10 @@ defaults = {
     "executable": None
 }
 
+command_options = DIST.command_options	# type: ignore[attr-defined]
 for name in defaults:
     try:
-        defaults[name] = DIST.command_options["make_python_rpm"][name][1]	# type: ignore[attr-defined]
+        defaults[name] = command_options["make_python_rpm"][name][1]
     except KeyError:
         pass
 
@@ -592,13 +594,18 @@ print(sys.modules["pip"].__file__)
             release = 1
 
     scripts: List[str] = []
-    for script in DIST.command_options["options"]["scripts"]:	# type: ignore[attr-defined]
-        script = script.strip()
-        if not script.startswith("bin/"):
-            continue
-        if "/" in script[4:]:
-            continue
-        scripts.append(script)
+    for script in command_options["options"]["scripts"]:
+        for s in script.splitlines():
+            if not s.startswith("bin/"):
+                continue
+            if "/" in s[4:]:
+                continue
+            scripts.append(s)
+
+    dev_modules: Set[str] = set()
+    for req in command_options["options.extras_require"].get("dev", ""):
+        for r in req.splitlines():
+            dev_modules.add(r)
 
     dist_dir = Path("dist")
     dist_dir.mkdir(parents = True, exist_ok = True)
@@ -648,7 +655,15 @@ print(sys.modules["pip"].__file__)
         python_shell  = python_package["_path_shell"],
         target_quoted = shlex.quote(target),
         executable_quoted = shlex.quote(executable),
-        scripts_shell = " ".join(map(shlex.quote, scripts)))
+        scripts_shell = " ".join(map(shlex.quote, scripts)),
+
+        mypy_quoted   = shlex.quote("mypy") if "mypy" in dev_modules else "",
+        safety_quoted = shlex.quote("safety") if "safety" in dev_modules else "",
+        autoflake_quoted = shlex.quote("autoflake") if "autoflake" in dev_modules else "",
+        sphinx_quoted = shlex.quote("sphinx") if "sphinx" in dev_modules else ""
+    )
+    for name in DEV_PROGRAMS:
+        package_variables["%s_quoted" % name] = shlex.quote(name) if name in dev_modules else ""
 
     spec_file = package_dir / "SPECS" / f"{package_variables['package_name']}.spec"
     with open(template) as handle:

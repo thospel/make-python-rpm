@@ -40,12 +40,15 @@ Url: @URL
 venv/bin/python3 -m pip install --upgrade pip
 venv/bin/python3 -m pip install --upgrade setuptools
 # venv/bin/python3 -m pip list
+# install does not replace - with _ if pyproject.toml exists
+# touch pyproject.toml
 venv/bin/python3 -m pip install .
+
 rm -rf venv/docs
 # venv/bin/python3 -m pip list
 # venv/bin/python3 -m pip uninstall -y setuptools
 # remove all pycaches
-venv/bin/python3 -m pip freeze > venv/requirements.txt
+venv/bin/python3 -m pip freeze | grep -v " @@ file:/" > venv/requirements.txt
 find venv -name __pycache__ -type d -prune -exec rm -rf {} +
 # seek pyo file and pyc files to delete them
 find venv -name '*.py[co]' -delete
@@ -106,36 +109,47 @@ for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.st
 ' "$FROM_PATH" "$TO_PATH" '%{version}'
 
 %check
-venv/bin/python3 -m pip install safety
-venv/bin/python3 -m safety check
+venv/bin/python3 -m pip install .[dev]
+if test @safety_quoted; then
+    venv/bin/python3 -m @safety_quoted check
+fi
 if test @executable_quoted; then
     PYTHON=@executable_quoted
 else
     PYTHON=venv/bin/python3
 fi
 for script in @scripts_shell; do
-   "$PYTHON" "$script" --version > /dev/null
+    if sed -n '/[\/ ]python3\?$/q;q1' "$script"; then
+        "$PYTHON" "$script" --version > /dev/null
+    fi
 done
-# autoflake needs setuptools
-venv/bin/python3 -m pip install setuptools
-venv/bin/python3 -m pip install safety mypy autoflake types-setuptools
 LIB=""
 if test -d lib; then
   LIB=" lib"
 fi
-venv/bin/python3 -m mypy @scripts_shell$LIB
-venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell$LIB
+if test @mypy_quoted; then
+    venv/bin/python3 -m mypy @scripts_shell$LIB
+fi
+if test @safety_quoted; then
+    # autoflake needs setuptools
+    venv/bin/python3 -m pip install setuptools types-setuptools
+    venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell$LIB
+fi
 
 %clean
 rm -rf -- "$RPM_BUILD_ROOT"
 
 %post
-# Generate __pycache__
-find @target_quoted -name __pycache__ -type d -prune -exec rm -rf {} +
-find @target_quoted -name '*.py[co]' -delete
-for script in @scripts_shell; do
-  @target_quoted/"$script" --version > /dev/null
-done
+if test @target_quoted != /usr/local; then
+    # Generate __pycache__
+    find @target_quoted -name __pycache__ -type d -prune -exec rm -rf {} +
+    find @target_quoted -name '*.py[co]' -delete
+    for script in @scripts_shell; do
+        if sed -n '/[\/ ]python3\?$/q;q1' @target_quoted/"$script"; then
+            @target_quoted/"$script" --version > /dev/null
+        fi
+    done
+fi
 
 %preun
 # remove all __pycache__
