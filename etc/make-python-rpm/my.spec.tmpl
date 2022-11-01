@@ -117,7 +117,9 @@ if test -d lib; then
   LIB=" lib"
 fi
 if test @mypy_quoted; then
-    venv/bin/python3 -m mypy @scripts_shell$LIB
+    for script in @scripts_shell; do
+        venv/bin/python3 -m mypy "$script"$LIB
+    done
 fi
 if test @safety_quoted; then
     # autoflake needs setuptools
