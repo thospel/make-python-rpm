@@ -525,7 +525,10 @@ def full_package(
         # the last component of the version it is ignored by `egg_info -b`. E.g.
         # version `1.2` with -b 2 will lead to version `1.2` instead of the
         # proper `1.2.2`. It properly works however with -b 02. Go figure...
-        patch = ".0" + nr_commits
+        # This hack doesn't work anymore with the latest setuptools
+        # patch = ".0" + nr_commits
+        if git_version.rpartition(".")[2] == nr_commits:
+            raise SystemExit(f"{nr_commits=} is the same as the last part of version={git_version!r} which won't work due to a flaw in python egginfo. Please add an extra git commit as a workaround")
     else:
         patch = ""
 
