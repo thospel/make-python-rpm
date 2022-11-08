@@ -101,8 +101,8 @@ class SpecTemplate(AtTemplate):
         return super().substitute(mapping)
 
 def run(*args: str,
-        expect_error: Set[str] = None,
-        expect_returncode: Set[int] = None,
+        expect_error: Optional[Set[str]] = None,
+        expect_returncode: Optional[Set[int]] = None,
         capture_output: bool = True) -> str:
     """Run an external program and returns its output but only if there is no
     error output and no unexpected exitcode. Otherwise raise an exception
@@ -482,7 +482,7 @@ def full_package(
         target: str = TARGET,
         template: str = TEMPLATE_FILE,
         git: str = "",
-        release: int = None,
+        release: Optional[int] = None,
         group: str = GROUP,
         vendor: str = VENDOR,
         executable: Optional[str] = None,
