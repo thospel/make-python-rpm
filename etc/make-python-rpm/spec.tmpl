@@ -63,18 +63,28 @@ find venv -name '*.py[co]' -delete
 venv/bin/python3 -m pip install .[dev]
 
 if test -e docs; then
-
-  (. venv/bin/activate && make -C docs html)
+  # Remove email address (sphinx processing has problems with that)
+  vendor=`echo '@vendor' | sed -e 's/ *<.*//'`
+  (. venv/bin/activate && cd docs && SPHINXOPTS="-D author='' -D copyright='$vendor'" make html info)
   # rm -rf docs/build/.doctrees
+
   ln -sf build/html docs/%{docs}
   (cd docs && zip -r ../venv/docs.zip %{docs})
-  rm docs/%{docs}
   echo "./docs.zip" >> FILES_TO_INSTALL
+
+  cp -a docs/build/texinfo/%{unmangled_name}.info venv/
+  gzip venv/%{unmangled_name}.info
+  echo "./%{unmangled_name}.info.gz" >> FILES_TO_INSTALL
+
+  rm docs/%{docs}
 fi
 
 %install
 # Create directories
 install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted "$RPM_BUILD_ROOT/usr/local/bin"
+if test -e docs; then
+    install -d -m 0755 "$RPM_BUILD_ROOT"@target_quoted "$RPM_BUILD_ROOT/usr/local/share/info"
+fi
 
 echo @target_quoted > INSTALLED_FILES
 
@@ -86,6 +96,9 @@ if test "$INSTALL_TARGET" = /usr/local; then
     for script in @scripts_shell; do
         cp -r venv/"$script" "$RPM_BUILD_ROOT/usr/local/bin/"
     done
+    if test -e docs; then
+        cp -ar "venv/%{unmangled_name}.info.gz" "$RPM_BUILD_ROOT/usr/local/share/info/"
+    fi
 else
     # Copy the whole of venv
     (cd venv && tar -T ../FILES_TO_INSTALL -cpf-) | (cd "$RPM_BUILD_ROOT"@target_quoted/ && tar -xpf-)
@@ -95,6 +108,10 @@ else
         base=`basename "$script"`
         echo "/usr/local/bin/$base" >> INSTALLED_FILES
     done
+    if test -e docs; then
+        ln -s @target_quoted/"%{unmangled_name}.info.gz" "$RPM_BUILD_ROOT/usr/local/share/info/"
+        echo "/usr/local/share/info/%{unmangled_name}.info.gz" >> INSTALLED_FILES
+    fi
 fi
 
 # Update #! lines that refer to something in venv

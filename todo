@@ -1,0 +1,4 @@
+- Make ourselves install with the default spec package
+- We ourselves should depend on the texinfo package (for makeinfo)
+- Add other package deps if we use the interpreter from that package
+- Also allow to set manual package dependencies (so we can mention a version)
