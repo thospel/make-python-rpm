@@ -39,7 +39,7 @@ VENDOR = "%s <%s>" % (DIST.get_contact(), DIST.get_contact_email())	# type: igno
 TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())	# type: ignore[attr-defined]
 GROUP  = "Development/Libraries"
 FULL   = "-full"
-DEV_PROGRAMS = ["mypy", "safety", "autoflake", "sphinx"]
+DEV_PROGRAMS = ["mypy", "safety", "autoflake", "sphinx", "pytest"]
 
 DEBIAN_VERSION = "/etc/debian_version"
 

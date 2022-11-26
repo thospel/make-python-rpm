@@ -126,15 +126,22 @@ LIB=""
 if test -d lib; then
   LIB=" lib"
 fi
+TESTS=""
+if test -d tests; then
+  TESTS=" tests"
+fi
 if test @mypy_quoted; then
     for script in @scripts_shell; do
-        venv/bin/python3 -m mypy "$script"$LIB
+        venv/bin/python3 -m mypy "$script"$LIB$TESTS
     done
 fi
 if test @safety_quoted; then
     # autoflake needs setuptools
     venv/bin/python3 -m pip install setuptools types-setuptools
-    venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell$LIB
+    venv/bin/python3 -m autoflake -r --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys @scripts_shell$LIB$TESTS
+fi
+if test @pytest_quoted; then
+    venv/bin/python3 -m pytest -x
 fi
 
 %clean
