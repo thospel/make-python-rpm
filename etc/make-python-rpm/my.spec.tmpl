@@ -24,8 +24,8 @@ Prefix: %{_prefix}
 BuildArch: @architecture
 Vendor: @vendor
 Packager: @packager
-# Requires: @requires
-BuildRequires: @requires
+Requires: @requires
+BuildRequires: @build_requires
 Url: @URL
 
 %description
@@ -35,9 +35,10 @@ Url: @URL
 %setup -n %{unmangled_name}-%{unmangled_version}
 
 %build
+@build_environment
 @python_shell -m venv venv
 venv/bin/python3 -m pip install --upgrade pip
-# venv/bin/python3 -m pip install --upgrade setuptools
+venv/bin/python3 -m pip install --upgrade setuptools
 # venv/bin/python3 -m pip list
 
 # install does not replace - with _ if pyproject.toml exists
@@ -107,6 +108,7 @@ for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.st
 ' "$FROM_PATH" "$TO_PATH" '%{version}'
 
 %check
+PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
 venv/bin/python3 -m pip install .[dev]
 if test @safety_quoted; then
     venv/bin/python3 -m @safety_quoted check

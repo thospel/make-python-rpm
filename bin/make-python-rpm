@@ -14,16 +14,17 @@ from datetime import datetime
 from pathlib import Path
 from string import Template
 from collections import ChainMap
+from itertools import chain
 from stat import S_IXUSR
 from setuptools.dist import Distribution
-from dataclasses import dataclass, field
-from typing import Dict, List, Set, Tuple, Optional, ClassVar
+from dataclasses import dataclass, field, InitVar
+from typing import Dict, List, Set, Tuple, Optional, Iterator, ClassVar
 # We want this to work in plain python without external modules
 # So avoid docopt
 import argparse
 
 # This number will automatically get replaced by make-python-rpm
-PACKAGE_VERSION = "1.0.13"
+PACKAGE_VERSION = "1.0.21"
 
 DIST = Distribution()
 DIST.parse_config_files()
@@ -40,6 +41,8 @@ TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())	# type: ignore[attr-defin
 GROUP  = "Development/Libraries"
 FULL   = "-full"
 DEV_PROGRAMS = ["mypy", "safety", "autoflake", "sphinx", "pytest"]
+# The name of our settings in setup.cfg
+MAKE_PYTHON_SECTION = "make_python_rpm"
 
 DEBIAN_VERSION = "/etc/debian_version"
 
@@ -55,11 +58,83 @@ defaults = {
 }
 
 command_options = DIST.command_options	# type: ignore[attr-defined]
-for name in defaults:
-    try:
-        defaults[name] = command_options["make_python_rpm"][name][1]
-    except KeyError:
-        pass
+
+@dataclass
+class SetupOptions:
+    options: InitVar[Dict[str, Tuple[str]]]
+    _options: Dict[str, List[str]] = field(init = False)
+    format: str = field(init = False)
+
+    def __post_init__(self, options: Dict[str, Tuple[str, ...]]) -> None:
+        # All entries in MAKE_PYTHON_SECTION are of the form
+        #   tuple('setup.cfg', joined_lines)
+        # Drop the `setup.cfg` and split the lines
+        self._options = { k: v[1].strip().splitlines() for k, v in options.items() }
+
+    def set_defaults(self, defaults: Dict[str, Optional[str]]) -> None:
+        """Update `defaults` with any corresponding settings from the
+        MAKE_PYTHON_SECTION section of ``setup.cfg``"""
+
+        for name in defaults:
+            try:
+                defaults[name] = self._options[name][0]
+                assert len(self._options[name]) == 1
+            except KeyError:
+                pass
+
+    def get(self, name: str) -> Iterator[str]:
+        """Look up the values of option `name` and `name_<format>` in the
+        MAKE_PYTHON_SECTION section of ``setup.cfg``. `<format>` is either
+        `rpm` or `deb` and comes from our `format` attribute. Returns an empty
+        iterator if neither option is given"""
+
+        return chain(self._options.get(name,                          []),
+                     self._options.get("%s_%s" % (name, self.format), []))
+
+    def build_environment(self) -> Dict[str, str]:
+        """Return names and values of the `build_environment` setting from the
+        MAKE_PYTHON_SECTION section of ``setup.cfg``"""
+
+        env_dict: Dict[str, str] = {}
+        for env in self.get("build_environment"):
+            name, sep, value = env.partition("=")
+            if not sep:
+                raise SystemExit(f"Invalid build environment variable {env!r}")
+            name = name.strip()
+            if name in env_dict:
+                raise SystemExit(f"Duplicate build environment variable {name!r}")
+            env_dict[name] = value.strip()
+        return env_dict
+
+    def set_environment(self) -> None:
+        """Set environment variables from the `build_environment` setting from
+        the MAKE_PYTHON_SECTION section of ``setup.cfg``"""
+
+        os.environ.update(self.build_environment())
+
+    def build_environment_shell(self) -> str:
+        """Create a section of SHELL code that sets environment variables as
+        declared in the `build_environment` setting from the MAKE_PYTHON_SECTION
+        section of ``setup.cfg``"""
+
+        return "\n".join("export %s=%s" % (k, shlex.quote(v)) for k, v in self.build_environment().items())
+
+    def add_packages(self, packages: Set[str], name: str) -> None:
+        """Add the names from the `name` setting in the MAKE_PYTHON_SECTION
+        section of ``setup.cfg``"""
+        for package_name in self.get(name):
+            if self.format == DEB:
+                parts = package_name.split()
+                if not parts:
+                    raise AssertionError("Empty package name")
+                if len(parts) > 1:
+                    # We assume the second part(s) is a version requirement like
+                    # `>= 6.12`. For debian we need to convert that to `(>= 6.12)`
+                    package_name = "%s (%s)" % (parts[0], " ".join(parts[1:]))
+            packages.add(package_name)
+
+setup_options = SetupOptions(command_options.get(MAKE_PYTHON_SECTION, {}))
+setup_options.set_defaults(defaults)
 
 class MakeChainMap(ChainMap):
     def __getitem__(self, key):
@@ -112,13 +187,9 @@ def run(*args: str,
     args = (*args[0].split(), *args[1:])
     command = " ".join(args)
     print("+", command)
-    if capture_output:
-        result = subprocess.run(args,
-                                stdout = subprocess.PIPE,
-                                stderr = subprocess.PIPE,
-                                universal_newlines = True)
-    else:
-        result = subprocess.run(args, universal_newlines = True)
+    result = subprocess.run(args,
+                            capture_output = capture_output,
+                            text = True)
     if capture_output:
         error = result.stderr.strip()
         if expect_error is not None:
@@ -267,23 +338,23 @@ def info_from_package_deb(deb_package: str, must_exist = True) -> Dict[str, str]
     info["version"], _, info["release"] = info["version"].partition("-")
     return info
 
-def package_from_file(path: str, format: str = RPM) -> Dict[str, str]:
+def package_from_file(path: str) -> Dict[str, str]:
     """Given a path determine which RPM package that file comes from and return
     the properties of that package
     """
 
     real_path = os.path.realpath(path)
-    if format == RPM:
+    if setup_options.format == RPM:
         package = run("rpm", "-qf", "--", real_path).strip()
         info = info_from_package_rpm(package)
-    elif format == DEB:
+    elif setup_options.format == DEB:
         dpkg_out = run("dpkg", "-S", "--", real_path).strip()
         package, colon, _ = dpkg_out.partition(":")
         if colon != ":":
             raise AssertionError("Could not find colon in dpkg output '%s'", dpkg_out)
         info = info_from_package_deb(package)
     else:
-        raise AssertionError("Unhandled package format '%s'" % format)
+        raise AssertionError("Unhandled package format '%s'" % setup_options.format)
 
     info.update({
         # Initial _ makes certain it can't be overwritten by a package property
@@ -478,7 +549,6 @@ def make_deb(package_dir: Path,
         print("Created", dist_dir / deb.name)
 
 def full_package(
-        format: str = RPM,
         target: str = TARGET,
         template: str = TEMPLATE_FILE,
         git: str = "",
@@ -492,7 +562,6 @@ def full_package(
 
     if os.geteuid() == 0:
         raise SystemExit("Please do not run this script as user root")
-
     if sys.version_info < (3, 8):
         raise SystemExit("Python 3.8 or later is required")
 
@@ -547,7 +616,7 @@ def full_package(
         python_unwrapped = python_unwrapped = os.path.join(dir_unwrapped, link)
     if python_unwrapped != sys.executable:
         print("You are probably running inside a virtual environment. I followed some symlinks and will use '%s' is the target python" % python_unwrapped)
-    python_package = package_from_file(python_unwrapped, format = format)
+    python_package = package_from_file(python_unwrapped)
 
     # We probably don't really need to add pip in the dependencies
     # E.g. the whole rpm build can be done using a pip from PYPI
@@ -559,8 +628,7 @@ import pip
 print(sys.modules["pip"].__file__)
     """).strip()
     # We should probably handle the case that there is no pip package...
-    pip_package = package_from_file(pip_file, format = format)
-    # We should probably handle the case that the python and pip package are the same...
+    pip_package = package_from_file(pip_file)
 
     # DIST.parse_command_line()
 
@@ -578,18 +646,18 @@ print(sys.modules["pip"].__file__)
                 license = match.group(1).rstrip()
                 break
     if release is None:
-        if format == RPM:
+        if setup_options.format == RPM:
             old_package = info_from_package_rpm(
                 "%s-%s" % (package_name, package_version),
                 must_exist = False)
-        elif format == DEB:
+        elif setup_options.format == DEB:
             old_package = info_from_package_deb(
                 "%s" % package_name,
                 must_exist = False)
             if old_package and old_package["version"] != package_version:
                 old_package = {}
         else:
-            raise AssertionError("Unhandled package format '%s'" % format)
+            raise AssertionError("Unhandled package format '%s'" % setup_options.format)
 
         if old_package:
             release = 1 + int(old_package["release"])
@@ -618,7 +686,7 @@ print(sys.modules["pip"].__file__)
     shutil.rmtree(build_dir)
     os.umask(0o22)
     build_dir.mkdir()
-    package_dir = build_dir / format
+    package_dir = build_dir / setup_options.format
     package_dir.mkdir()
 
     for dir in "SOURCES", "SPECS", "BUILD":
@@ -639,6 +707,22 @@ print(sys.modules["pip"].__file__)
     if executable is None:
         executable = ""
 
+    build_packages: Set[str] = {
+        python_package["name"],
+        pip_package["name"],
+    }
+    setup_options.add_packages(build_packages, "build_requires")
+
+    run_packages: Set[str] = {
+        python_package["name"],
+        # pip package is not really needed at runtime.
+        # But it's nice to make the installed python env easily extendable
+        # And make-python-rpm itself in fact needs it as a runtime dependency
+        # (though we could easily special case that one in its setup.cfg)
+        pip_package["name"],
+    }
+    setup_options.add_packages(run_packages, "requires")
+
     package_variables: Dict[str, str] = dict(
         name          = DIST.get_name(),	# type: ignore[attr-defined]
         version       = version,
@@ -654,7 +738,9 @@ print(sys.modules["pip"].__file__)
         packager      = get_pwd().pw_gecos,
         source        = source.name,
         URL           = DIST.get_url(),	# type: ignore[attr-defined]
-        requires      = ", ".join([python_package["name"], pip_package["name"]]),
+        requires      = ", ".join(run_packages),
+        build_requires = ", ".join(build_packages),
+        build_environment = setup_options.build_environment_shell(),
         python_shell  = python_package["_path_shell"],
         target_quoted = shlex.quote(target),
         executable_quoted = shlex.quote(executable),
@@ -676,16 +762,16 @@ print(sys.modules["pip"].__file__)
         print(f"spec file {spec_file.resolve()}")
         return
 
-    if format == RPM:
+    if setup_options.format == RPM:
         make_rpm(package_dir, dist_dir, spec_file, package_variables)
-    elif format == DEB:
-        make_deb(package_dir, dist_dir, spec_file, TEMPLATE_DIR / format, package_variables)
+    elif setup_options.format == DEB:
+        make_deb(package_dir, dist_dir, spec_file, TEMPLATE_DIR / setup_options.format, package_variables)
     else:
-        raise AssertionError("Unhandled package format '%s'" % format)
+        raise AssertionError("Unhandled package format '%s'" % setup_options.format)
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(
-        description='Create an RPM with all dependencies')
+        description="Create an RPM with all dependencies")
     parser.add_argument(
         "-F", "--format",
         default = defaults["format"],
@@ -736,9 +822,11 @@ if __name__=='__main__':
         action = "store_true",
         help = "Inform about internal actions")
     # The version (1.0.0) will get updated while creating the package
-    parser.add_argument('--version', action="version", version=f"%(prog)s {PACKAGE_VERSION}")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {PACKAGE_VERSION}")
     args = vars(parser.parse_args())
     args["executable"] = defaults["executable"]
     if args["debug"]:
         print(f"{args=}")
+    setup_options.format = args.pop("format")
+    setup_options.set_environment()
     full_package(**args)

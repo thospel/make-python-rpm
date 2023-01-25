@@ -26,7 +26,7 @@ BuildArch: @architecture
 Vendor: @vendor
 Packager: @packager
 Requires: @requires
-BuildRequires: @requires
+BuildRequires: @build_requires
 Url: @URL
 
 %description
@@ -36,6 +36,7 @@ Url: @URL
 %setup -n %{unmangled_name}-%{unmangled_version}
 
 %build
+@build_environment
 @python_shell -m venv venv
 venv/bin/python3 -m pip install --upgrade pip
 venv/bin/python3 -m pip install --upgrade setuptools
@@ -129,6 +130,7 @@ for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.st
 ' "$FROM_PATH" "$TO_PATH" '%{version}'
 
 %check
+PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
 venv/bin/python3 -m pip install .[dev]
 if test @safety_quoted; then
     venv/bin/python3 -m @safety_quoted check
@@ -169,6 +171,7 @@ fi
 rm -rf -- "$RPM_BUILD_ROOT"
 
 %post
+PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
 if test @target_quoted != /usr/local; then
     # Generate __pycache__
     find @target_quoted -name __pycache__ -type d -prune -exec rm -rf {} +
