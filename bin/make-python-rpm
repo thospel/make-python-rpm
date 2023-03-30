@@ -36,15 +36,16 @@ DEB	= "deb"
 TEMPLATE_DIR  = Path(__file__).parents[1] / "etc" / "make-python-rpm"
 TEMPLATE_FILE = str(TEMPLATE_DIR / "spec.tmpl")
 ORGANIZATION_DIR = "/usr/local/lib"
-VENDOR = "%s <%s>" % (DIST.get_contact(), DIST.get_contact_email())	# type: ignore[attr-defined]
-TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())	# type: ignore[attr-defined]
+VENDOR = "%s <%s>" % (DIST.get_contact(), DIST.get_contact_email())
+TARGET = "%s/%s" % (ORGANIZATION_DIR, DIST.get_name())
 GROUP  = "Development/Libraries"
 FULL   = "-full"
 DEV_PROGRAMS = ["mypy", "safety", "autoflake", "sphinx", "pytest"]
 # The name of our settings in setup.cfg
 MAKE_PYTHON_SECTION = "make_python_rpm"
 
-DEBIAN_VERSION = "/etc/debian_version"
+DEBIAN_VERSION	= "/etc/debian_version"
+OS_RELEASE	= "/etc/os-release"
 
 defaults = {
     "format":	DEB if Path(DEBIAN_VERSION).exists() else RPM,
@@ -57,7 +58,7 @@ defaults = {
     "executable": None
 }
 
-command_options = DIST.command_options	# type: ignore[attr-defined]
+command_options = DIST.command_options
 
 @dataclass
 class SetupOptions:
@@ -133,7 +134,9 @@ class SetupOptions:
                     package_name = "%s (%s)" % (parts[0], " ".join(parts[1:]))
             packages.add(package_name)
 
-setup_options = SetupOptions(command_options.get(MAKE_PYTHON_SECTION, {}))
+empty_dict: Dict[str, Tuple[str]] = {}
+make_python_section: Dict[str, Tuple[str]] = command_options.get(MAKE_PYTHON_SECTION, empty_dict)	# type: ignore[assignment]
+setup_options = SetupOptions(make_python_section)
 setup_options.set_defaults(defaults)
 
 class MakeChainMap(ChainMap):
@@ -426,10 +429,19 @@ class Spec:
     settings: Dict[str, str] = field(init = False, default_factory = dict)
 
     def __post_init__(self):
-        with open(DEBIAN_VERSION) as version_file:
-            # E.g. get `sid` from `bookworm/sid`
-            # distribution = next(version_file)strip().split("/", maxsplit=1)[0]
-            distribution = next(version_file).strip().split("/", maxsplit=2)[1]
+        # This will pick e.g. 'bookworm' as distribution name
+        # However maybe we should use e.g. 'sid' or 'experimental'
+        # The only way to get that is probably through /etc/apt/sources.list
+        # I'm not sure which you are supposed to use for most stability
+        # For now dpkg -i doesn't seem to care, so leave it as is
+        with open(OS_RELEASE) as version_file:
+            for line in version_file:
+                if line.startswith('VERSION_CODENAME='):
+                    distribution = line.partition('=')[2].strip("'\"\n")
+                    break
+            else:
+                raise RuntimeError("Cpould not find 'VERSION_CODENAME=' in %s" % OS_RELEASE)
+            first_line = next(version_file).strip()
         now = datetime.now().astimezone()
         variables: Dict[str, str] = dict(
             date	= now.strftime("%a, %d %b %Y %H:%M:%S %z"),
@@ -574,7 +586,7 @@ def full_package(
         if debug:
             print(f"Version check succeeded: {version_min} <= {PACKAGE_VERSION}")
 
-    version = DIST.get_version()	# type: ignore[attr-defined]
+    version = DIST.get_version()
 
     if git:
         # Check git branch
@@ -634,13 +646,13 @@ print(sys.modules["pip"].__file__)
 
     # Add suffix -full to indicate that it has all dependencies and differs
     # from what bdist_rpm generates
-    package_name = DIST.get_name() + FULL	# type: ignore[attr-defined]
+    package_name = DIST.get_name() + FULL
     package_version = version.replace("-", "_")
     architecture = python_package["architecture"]
-    license = DIST.get_license() or "UNKNOWN"	# type: ignore[attr-defined]
+    license = DIST.get_license() or "UNKNOWN"
     # If no explicit license try to get it from a classifier
     if license.casefold() == "unknown":
-        for classifier in DIST.get_classifiers():	# type: ignore[attr-defined]
+        for classifier in DIST.get_classifiers():
             match = re.fullmatch(r"^License\s*::\s*(\S.*)", classifier, re.IGNORECASE)
             if match:
                 license = match.group(1).rstrip()
@@ -724,20 +736,20 @@ print(sys.modules["pip"].__file__)
     setup_options.add_packages(run_packages, "requires")
 
     package_variables: Dict[str, str] = dict(
-        name          = DIST.get_name(),	# type: ignore[attr-defined]
+        name          = DIST.get_name(),
         version       = version,
         package_name  = package_name,
         package_version = package_version,
         release       = str(release),
         architecture  = architecture,
-        description   = DIST.get_description(),	# type: ignore[attr-defined]
-        long_description = DIST.get_long_description().strip(),	# type: ignore[attr-defined]
+        description   = DIST.get_description(),
+        long_description = DIST.get_long_description().strip(),
         group         = group,
         license       = license,
         vendor        = vendor,
         packager      = get_pwd().pw_gecos,
         source        = source.name,
-        URL           = DIST.get_url(),	# type: ignore[attr-defined]
+        URL           = DIST.get_url(),
         requires      = ", ".join(run_packages),
         build_requires = ", ".join(build_packages),
         build_environment = setup_options.build_environment_shell(),
