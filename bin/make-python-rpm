@@ -547,7 +547,7 @@ def make_deb(package_dir: Path,
         raise AssertionError(f"Expected exectly 1 direcroy in tar file, got {tar_dirs!r}")
     deb_dir = tar_dirs[0]
     spec.make_debian(deb_dir / "debian", templates)
-    command = "debuild -i -us -uc -b"
+    command = "debuild -e http_proxy -e https_proxy -i -us -uc -b"
     result = subprocess.run(command.split(), cwd = deb_dir)
     if result.returncode:
         raise SystemExit("'%s' exited with unexpected returncode %d" %
