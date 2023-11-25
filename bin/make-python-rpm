@@ -66,7 +66,9 @@ class SetupOptions:
     _options: Dict[str, List[str]] = field(init = False)
     format: str = field(init = False)
 
-    def __post_init__(self, options: Dict[str, Tuple[str, ...]]) -> None:
+    # signature is now dict[str, tuple[str, ...] making backward compat hard
+    # def __post_init__(self, options: Dict[str, Tuple[str, ...]]) -> None:
+    def __post_init__(self, options) -> None:
         # All entries in MAKE_PYTHON_SECTION are of the form
         #   tuple('setup.cfg', joined_lines)
         # Drop the `setup.cfg` and split the lines
