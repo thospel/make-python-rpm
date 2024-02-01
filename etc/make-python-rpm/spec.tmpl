@@ -12,6 +12,9 @@
 # Add --soname-only. We don't really want that, but otherwise binary python wheels generate requires without corresponding provides
 %define __elf_requires	%{_rpmconfigdir}/elfdeps --requires --soname-only %{?__filter_GLIBC_PRIVATE:--filter-private}
 
+# We don't want to deal with shebang unmangling for now
+# (needed in rh9 since unmangle failure is now an error instead of a warning)
+%undefine __brp_mangle_shebangs
 
 Summary: @description
 Name: %{name}

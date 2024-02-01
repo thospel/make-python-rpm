@@ -15,6 +15,7 @@ from pathlib import Path
 from string import Template
 from collections import ChainMap
 from itertools import chain
+from functools import lru_cache
 from stat import S_IXUSR
 from setuptools.dist import Distribution
 from dataclasses import dataclass, field, InitVar
@@ -24,7 +25,7 @@ from typing import Dict, List, Set, Tuple, Optional, Iterator, ClassVar
 import argparse
 
 # This number will automatically get replaced by make-python-rpm
-PACKAGE_VERSION = "1.0.21"
+PACKAGE_VERSION = "1.0.26"
 
 DIST = Distribution()
 DIST.parse_config_files()
@@ -122,10 +123,19 @@ class SetupOptions:
 
         return "\n".join("export %s=%s" % (k, shlex.quote(v)) for k, v in self.build_environment().items())
 
-    def add_packages(self, packages: Set[str], name: str) -> None:
+    def add_packages(self, packages: Set[str], name: str, dir_unwrapped: str) -> None:
         """Add the names from the `name` setting in the MAKE_PYTHON_SECTION
         section of ``setup.cfg``"""
         for package_name in self.get(name):
+            if match := re.fullmatch(r"provides\(((/|).*)\)", package_name, re.IGNORECASE):
+                (file, absolute) = match.groups()
+                if not absolute:
+                    absolute_file = shutil.which(file, path="%s:%s" % (os.defpath, dir_unwrapped))
+                    if absolute_file is None:
+                        raise FileNotFoundError(file)
+                    file = absolute_file
+                package_name = package_from_file(file)["name"]
+
             if self.format == DEB:
                 parts = package_name.split()
                 if not parts:
@@ -343,6 +353,7 @@ def info_from_package_deb(deb_package: str, must_exist = True) -> Dict[str, str]
     info["version"], _, info["release"] = info["version"].partition("-")
     return info
 
+@lru_cache(maxsize=None)
 def package_from_file(path: str) -> Dict[str, str]:
     """Given a path determine which RPM package that file comes from and return
     the properties of that package
@@ -725,7 +736,7 @@ print(sys.modules["pip"].__file__)
         python_package["name"],
         pip_package["name"],
     }
-    setup_options.add_packages(build_packages, "build_requires")
+    setup_options.add_packages(build_packages, "build_requires", dir_unwrapped)
 
     run_packages: Set[str] = {
         python_package["name"],
@@ -735,7 +746,7 @@ print(sys.modules["pip"].__file__)
         # (though we could easily special case that one in its setup.cfg)
         pip_package["name"],
     }
-    setup_options.add_packages(run_packages, "requires")
+    setup_options.add_packages(run_packages, "requires", dir_unwrapped)
 
     package_variables: Dict[str, str] = dict(
         name          = DIST.get_name(),
