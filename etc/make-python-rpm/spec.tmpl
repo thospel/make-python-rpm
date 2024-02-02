@@ -46,7 +46,9 @@ venv/bin/python3 -m pip install --upgrade setuptools
 # venv/bin/python3 -m pip list
 # install does not replace - with _ if pyproject.toml exists
 # touch pyproject.toml
+@pre_pip_install
 venv/bin/python3 -m pip install .
+@post_pip_install
 
 rm -rf venv/docs
 # venv/bin/python3 -m pip list

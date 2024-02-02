@@ -43,7 +43,9 @@ venv/bin/python3 -m pip install --upgrade setuptools
 
 # install does not replace - with _ if pyproject.toml exists
 # touch pyproject.toml
+@pre_pip_install
 venv/bin/python3 -m pip install .
+@post_pip_install
 test -e venv/etc/make_python_rpm && mv venv/etc/make_python_rpm venv/etc/make-python-rpm
 
 rm -rf venv/docs
@@ -55,7 +57,7 @@ venv/bin/python3 -m pip freeze | grep -v " @@ file:/" | cat > venv/requirements.
 
 # remove all pycaches
 find venv -name __pycache__ -type d -prune -exec rm -rf {} +
-# seek pyo file and pyc file to delete it
+# seek pyo file and pyc files to delete them
 find venv -name '*.py[co]' -delete
 
 %install

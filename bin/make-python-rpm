@@ -748,6 +748,9 @@ print(sys.modules["pip"].__file__)
     }
     setup_options.add_packages(run_packages, "requires", dir_unwrapped)
 
+    pre_pip_install  = "\n".join(setup_options.get("pre_pip_install"))
+    post_pip_install = "\n".join(setup_options.get("post_pip_install"))
+
     package_variables: Dict[str, str] = dict(
         name          = DIST.get_name(),
         version       = version,
@@ -766,6 +769,8 @@ print(sys.modules["pip"].__file__)
         requires      = ", ".join(run_packages),
         build_requires = ", ".join(build_packages),
         build_environment = setup_options.build_environment_shell(),
+        pre_pip_install  = pre_pip_install,
+        post_pip_install = post_pip_install,
         python_shell  = python_package["_path_shell"],
         target_quoted = shlex.quote(target),
         executable_quoted = shlex.quote(executable),
