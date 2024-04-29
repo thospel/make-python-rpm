@@ -11,6 +11,11 @@
 # Add --soname-only. We don't really want that, but otherwise binary python wheels generate requires without corresponding provides
 %define __elf_requires	%{_rpmconfigdir}/elfdeps --requires --soname-only %{?__filter_GLIBC_PRIVATE:--filter-private}
 
+# Avoid conflicts since we install into /opt/xxxx but have duplicates of system
+# libraries which causes their build id to be put in /usr/lib/.build-id, but
+# the official libraries are already symlinked there leading to a conflict
+# This is a dirty fix. It should probable be solved using `%global _buildid_dir`
+%define _build_id_links none
 
 Summary: @description
 Name: %{name}
