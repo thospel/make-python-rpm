@@ -25,7 +25,7 @@ from typing import Dict, List, Set, Tuple, Optional, Iterator, ClassVar
 import argparse
 
 # This number will automatically get replaced by make-python-rpm
-PACKAGE_VERSION = "1.0.29"
+PACKAGE_VERSION = "1.0.32"
 
 DIST = Distribution()
 DIST.parse_config_files()
@@ -597,9 +597,9 @@ def full_package(
         Version = packaging.version.Version
         # from packaging.version import Version
         if Version(version_min) > Version(PACKAGE_VERSION):
-            raise SystemExit(f"Version check failed: {version_min} > {PACKAGE_VERSION}")
+            raise SystemExit(f"Section [{MAKE_PYTHON_SECTION}]: Version check failed: {version_min} > {PACKAGE_VERSION}")
         if debug:
-            print(f"Version check succeeded: {version_min} <= {PACKAGE_VERSION}")
+            print(f"Section [{MAKE_PYTHON_SECTION}]: Version check succeeded: {version_min} <= {PACKAGE_VERSION}")
 
     version = DIST.get_version()
 

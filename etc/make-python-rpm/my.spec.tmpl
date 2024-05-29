@@ -118,7 +118,8 @@ for line in fileinput.input(sys.stdin.read().splitlines(), inplace=True): sys.st
 PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
 venv/bin/python3 -m pip install .[dev]
 if test @safety_quoted; then
-    venv/bin/python3 -m @safety_quoted check
+    # Id 67599 is CVE-2018-20225. Irrelevant, we don't use private repositories
+    venv/bin/python3 -m @safety_quoted check --ignore 67599
 fi
 if test @executable_quoted; then
     PYTHON=@executable_quoted
