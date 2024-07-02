@@ -145,7 +145,8 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
 venv/bin/python3 -m pip install .[dev]
 if test @safety_quoted; then
     # Id 67599 is CVE-2018-20225. Irrelevant, we don't use private repositories
-    venv/bin/python3 -m @safety_quoted check --ignore 67599
+    # Id 70612 is CVE-2019-8341.  Disagreed, don't use untrusted templates
+    venv/bin/python3 -m @safety_quoted check --ignore 67599,70612
 fi
 if test @executable_quoted; then
     PYTHON=@executable_quoted
