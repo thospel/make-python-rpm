@@ -1,0 +1,51 @@
+name: make-python-rpm
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - main
+
+pool: 'tetoolingpool'
+
+parameters:
+- name: RUN_SONAR
+  displayName: Run SonarQube code analysis
+  type: boolean
+  default : true
+
+variables:
+  run_sonar: ${{ parameters.RUN_SONAR }}
+
+steps:
+- checkout: self
+
+- task: SonarQubePrepare@6
+  condition: eq(variables['run_sonar'], 'true')
+  inputs:
+    SonarQube: 'SonarQube-Service-Connection'
+    scannerMode: 'CLI'
+    configMode: 'manual'
+    cliProjectKey: 'com.shell.netops-make-python-rpm'
+    cliProjectName: 'netops-make-python-rpm'
+    cliSources: '.'
+    extraProperties: |
+      # Additional properties that will be passed to the scanner, 
+      # Put one key=value per line, example:
+        sonar.userHome=/opt/.sonar
+
+- task: SonarQubeAnalyze@6
+  condition: eq(variables['run_sonar'], 'true')
+  inputs:
+    jdkversion: 'JAVA_HOME'
+
+- task: SonarQubePublish@6
+  condition: eq(variables['run_sonar'], 'true')
+  inputs:
+    pollingTimeoutSec: '600'
+
+- task: sonar-buildbreaker@8
+  condition: eq(variables['run_sonar'], 'true')
+  inputs:
+    SonarQube: 'SonarQube-Service-Connection'
+
