@@ -1,5 +1,13 @@
 name: make-python-rpm
 
+resources:
+  repositories:
+    - repository: ansible
+      type: github
+      name: sede-x/netops-ansible
+      endpoint: sede-x
+      ref: main
+
 trigger:
   batch: true
   branches:
@@ -19,33 +27,13 @@ variables:
 
 steps:
 - checkout: self
+  path: s/make-python-rpm
+- checkout: ansible
+  path: s/ansible
 
-- task: SonarQubePrepare@6
-  condition: eq(variables['run_sonar'], 'true')
-  inputs:
-    SonarQube: 'SonarQube-Service-Connection'
-    scannerMode: 'CLI'
-    configMode: 'manual'
-    cliProjectKey: 'com.shell.netops-make-python-rpm'
-    cliProjectName: 'netops-make-python-rpm'
-    cliSources: '.'
-    extraProperties: |
-      # Additional properties that will be passed to the scanner, 
-      # Put one key=value per line, example:
-        sonar.userHome=/opt/.sonar
-
-- task: SonarQubeAnalyze@6
-  condition: eq(variables['run_sonar'], 'true')
-  inputs:
-    jdkversion: 'JAVA_HOME'
-
-- task: SonarQubePublish@6
-  condition: eq(variables['run_sonar'], 'true')
-  inputs:
-    pollingTimeoutSec: '600'
-
-- task: sonar-buildbreaker@8
-  condition: eq(variables['run_sonar'], 'true')
-  inputs:
-    SonarQube: 'SonarQube-Service-Connection'
+- template: azure-pipelines-templates/sonar-template.yml@ansible
+  parameters:
+     projectKey: 'com.shell.netops-make-python-rpm'
+     projectName: 'netops-make-python-rpm'
+     projectBaseDir: './make-python-rpm'
 
