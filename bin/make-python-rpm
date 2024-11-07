@@ -29,6 +29,7 @@ PACKAGE_VERSION = "1.0.32"
 
 DIST = Distribution()
 DIST.parse_config_files()
+
 # pprint(DIST.install_requires)
 
 RPM	= "rpm"
@@ -60,6 +61,8 @@ defaults = {
 }
 
 command_options = DIST.command_options
+if "options" not in command_options:
+    raise SystemExit("No options in parsed distribution. Are you in the correct directory ?")
 
 @dataclass
 class SetupOptions:
