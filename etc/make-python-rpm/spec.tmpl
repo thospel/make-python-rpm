@@ -15,7 +15,7 @@
 # Avoid conflicts since we install into /opt/xxxx but have duplicates of system
 # libraries which causes their build id to be put in /usr/lib/.build-id, but
 # the official libraries are already symlinked there leading to a conflict
-# This is a dirty fix. It should probable be solved using `%global _buildid_dir`
+# This is a dirty fix. It should probable be solved using `%%global _buildid_dir`
 %define _build_id_links none
 
 # We don't want to deal with shebang unmangling for now
